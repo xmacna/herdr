@@ -5,6 +5,16 @@ use crate::api::schema::AgentStatus;
 use crate::config::{OrganizationAgentConfig, OrganizationConfig};
 use crate::protocol::{ClientShellAgent, ClientShellSnapshot};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OrganizationVisualKind {
+    Root,
+    Coordinator,
+    Manager,
+    Worker,
+    Group,
+    Unbound,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct OrganizationRow {
     pub(super) key: String,
@@ -19,17 +29,46 @@ pub(super) struct OrganizationRow {
     pub(super) collapsed: bool,
     pub(super) selected: bool,
     pub(super) invalid: bool,
+    pub(super) visual_kind: OrganizationVisualKind,
+    pub(super) box_start: bool,
+    pub(super) box_end: bool,
 }
 
 impl OrganizationRow {
     pub(super) fn height(&self) -> usize {
-        1usize.saturating_add(
+        let content = 1usize.saturating_add(
             self.meta
                 .lines()
                 .count()
                 .saturating_sub(usize::from(self.meta.is_empty())),
-        )
+        );
+        match self.visual_kind {
+            OrganizationVisualKind::Root => 3,
+            OrganizationVisualKind::Coordinator
+            | OrganizationVisualKind::Group
+            | OrganizationVisualKind::Manager
+            | OrganizationVisualKind::Worker => content.saturating_add(1),
+            _ => content,
+        }
     }
+}
+
+fn visual_kind(entry: &OrganizationAgentConfig, has_children: bool) -> OrganizationVisualKind {
+    let role = entry.role.trim().to_ascii_lowercase();
+    if is_coordinator(entry) {
+        OrganizationVisualKind::Coordinator
+    } else if matches!(role.as_str(), "manager" | "gerente") || has_children {
+        OrganizationVisualKind::Manager
+    } else {
+        OrganizationVisualKind::Worker
+    }
+}
+
+fn is_coordinator(entry: &OrganizationAgentConfig) -> bool {
+    matches!(
+        entry.role.trim().to_ascii_lowercase().as_str(),
+        "coordinator" | "coordenador"
+    )
 }
 
 fn status_max(left: AgentStatus, right: AgentStatus) -> AgentStatus {
@@ -73,7 +112,9 @@ fn configured_meta(
         ]),
         join_meta([entry.task.clone()]),
         join_meta([
-            Some(if !runtime_present {
+            Some(if !runtime_present && entry.reserved {
+                "reserved · no runtime".to_owned()
+            } else if !runtime_present {
                 "unbound · no runtime".to_owned()
             } else if attention > 0 {
                 format!("! {attention}")
@@ -206,6 +247,7 @@ fn emit_configured(
     } else {
         configured_meta(entry, status, attention, runtime[index].is_some())
     };
+    let visual_kind = visual_kind(entry, expandable);
     rows.push(OrganizationRow {
         key: key.clone(),
         parent_key,
@@ -219,6 +261,9 @@ fn emit_configured(
         collapsed: is_collapsed,
         selected: selected == Some(key.as_str()),
         invalid: invalid[index],
+        visual_kind,
+        box_start: visual_kind == OrganizationVisualKind::Manager,
+        box_end: false,
     });
     if is_collapsed {
         return;
@@ -362,6 +407,7 @@ pub(super) fn rows(
         .collect::<HashSet<_>>();
     let mut configured_roots = Vec::new();
     let mut reserved_indices = Vec::new();
+    let mut reserved_coordinators = Vec::new();
     let mut pending = Vec::new();
     for index in 0..entries.len() {
         if invalid[index] {
@@ -393,7 +439,15 @@ pub(super) fn rows(
                 collapsed: false,
                 selected: selected == Some(keys[index].as_str()),
                 invalid: true,
+                visual_kind: OrganizationVisualKind::Unbound,
+                box_start: false,
+                box_end: false,
             });
+        } else if entries[index].reserved
+            && is_coordinator(&entries[index])
+            && parent[index].is_none()
+        {
+            reserved_coordinators.push(index);
         } else if entries[index].reserved
             && parent[index].is_none_or(|parent| !entries[parent].reserved)
         {
@@ -437,11 +491,78 @@ pub(super) fn rows(
         collapsed: root_collapsed,
         selected: selected == Some(scope_root.as_str()),
         invalid: false,
+        visual_kind: OrganizationVisualKind::Root,
+        box_start: false,
+        box_end: false,
     });
     if root_collapsed {
+        // Collapsing the virtual root only hides the manager/workers area. The
+        // coordination panel is a separate surface and must retain every
+        // explicitly registered coordinator, including reserved coordinators.
+        let mut coordinator_collapsed = collapsed.clone();
+        for index in 0..entries.len() {
+            if !invalid[index] && is_coordinator(&entries[index]) {
+                coordinator_collapsed.insert(keys[index].clone());
+            }
+        }
+        for index in configured_roots
+            .iter()
+            .copied()
+            .filter(|index| is_coordinator(&entries[*index]))
+        {
+            emit_configured(
+                index,
+                1,
+                Some(scope_root.clone()),
+                &children,
+                &entries,
+                &runtime,
+                &invalid,
+                &aggregate,
+                &coordinator_collapsed,
+                selected,
+                &mut rows,
+                &keys,
+            );
+        }
+        // `reserved_coordinators` has not been moved into the reserve group,
+        // so it remains visible here as an individual coordinator card.
+        for index in reserved_coordinators {
+            emit_configured(
+                index,
+                1,
+                Some(scope_root.clone()),
+                &children,
+                &entries,
+                &runtime,
+                &invalid,
+                &aggregate,
+                &coordinator_collapsed,
+                selected,
+                &mut rows,
+                &keys,
+            );
+        }
+        move_coordinators_to_panel(&mut rows);
         return rows;
     }
     for index in configured_roots {
+        emit_configured(
+            index,
+            1,
+            Some(scope_root.clone()),
+            &children,
+            &entries,
+            &runtime,
+            &invalid,
+            &aggregate,
+            collapsed,
+            selected,
+            &mut rows,
+            &keys,
+        );
+    }
+    for index in reserved_coordinators {
         emit_configured(
             index,
             1,
@@ -490,6 +611,9 @@ pub(super) fn rows(
             collapsed: reserve_collapsed,
             selected: selected == Some(key.as_str()),
             invalid: false,
+            visual_kind: OrganizationVisualKind::Group,
+            box_start: false,
+            box_end: false,
         });
         if !reserve_collapsed {
             for index in reserved_indices {
@@ -529,6 +653,9 @@ pub(super) fn rows(
                 collapsed: false,
                 selected: selected == Some(key.as_str()),
                 invalid: true,
+                visual_kind: OrganizationVisualKind::Unbound,
+                box_start: false,
+                box_end: false,
             }
         })
         .collect::<Vec<_>>();
@@ -553,7 +680,68 @@ pub(super) fn rows(
         selected,
         &mut rows,
     );
+    move_coordinators_to_panel(&mut rows);
+    annotate_visual_boxes(&mut rows);
     rows
+}
+
+fn move_coordinators_to_panel(rows: &mut Vec<OrganizationRow>) {
+    let Some(root) = rows.first().cloned() else {
+        return;
+    };
+    let mut coordinators = rows
+        .iter()
+        .skip(1)
+        .filter(|row| row.visual_kind == OrganizationVisualKind::Coordinator)
+        .cloned()
+        .collect::<Vec<_>>();
+    if coordinators.is_empty() {
+        if let Some(root) = rows.first_mut() {
+            root.box_end = true;
+        }
+        return;
+    }
+    let mut rest = rows
+        .iter()
+        .skip(1)
+        .filter(|row| row.visual_kind != OrganizationVisualKind::Coordinator)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut reordered = Vec::with_capacity(rows.len());
+    reordered.push(root);
+    for row in &mut coordinators {
+        row.box_end = false;
+    }
+    if let Some(last) = coordinators.last_mut() {
+        last.box_end = true;
+    }
+    reordered.append(&mut coordinators);
+    reordered.append(&mut rest);
+    *rows = reordered;
+}
+
+fn annotate_visual_boxes(rows: &mut [OrganizationRow]) {
+    for index in 0..rows.len() {
+        if rows[index].visual_kind != OrganizationVisualKind::Manager {
+            continue;
+        }
+        let depth = rows[index].depth;
+        let end = rows
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find(|(_, row)| row.depth <= depth)
+            .map_or(rows.len(), |(index, _)| index);
+        rows[index].box_start = true;
+        rows[index].box_end = end == index + 1;
+        for row in rows.iter_mut().take(end).skip(index + 1) {
+            row.box_start = false;
+            row.box_end = false;
+        }
+        if end > index + 1 {
+            rows[end - 1].box_end = true;
+        }
+    }
 }
 
 fn virtual_group(
@@ -598,6 +786,9 @@ fn virtual_group(
         collapsed: is_collapsed,
         selected: selected == Some(key.as_str()),
         invalid: group == "pending",
+        visual_kind: OrganizationVisualKind::Group,
+        box_start: false,
+        box_end: false,
     });
     if !is_collapsed {
         rows.extend(items.iter().cloned());
@@ -911,7 +1102,11 @@ mod tests {
             .map(|(key, _)| key.as_str())
             .collect::<HashSet<_>>();
         assert_eq!(keys.len(), pane_rows.len());
-        assert_eq!(pane_rows.len(), 7, "pane rows: {pane_rows:?}; all rows: {all_rows:?}");
+        assert_eq!(
+            pane_rows.len(),
+            7,
+            "pane rows: {pane_rows:?}; all rows: {all_rows:?}"
+        );
         for (key, pane) in pane_rows {
             let selected = rows(&snapshot, &config, "local", &HashSet::new(), Some(&key))
                 .into_iter()
@@ -920,5 +1115,59 @@ mod tests {
             assert_eq!(selected.len(), 1, "selection key {key} must be unique");
             assert_eq!(selected[0].pane_id.as_deref(), Some(pane));
         }
+    }
+
+    #[test]
+    fn collapsed_root_keeps_active_and_reserved_coordinators_in_argos_panel() {
+        let config = config(vec![
+            OrganizationAgentConfig {
+                id: "argos".into(),
+                label: "Argos active".into(),
+                role: "coordinator".into(),
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "argos-reserve".into(),
+                label: "Argos reserve".into(),
+                role: "coordinator".into(),
+                reserved: true,
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "manager".into(),
+                label: "Manager".into(),
+                parent_id: Some("argos".into()),
+                role: "manager".into(),
+                ..Default::default()
+            },
+        ]);
+        let snapshot = test_snapshot(&[]);
+        let root = scoped_group("local", "root");
+        let rows = rows(&snapshot, &config, "local", &HashSet::from([root]), None);
+        let labels = rows
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"Argos active"));
+        assert!(labels.contains(&"Argos reserve"));
+        assert!(!labels.contains(&"Manager"));
+    }
+
+    #[test]
+    fn root_without_coordinator_receives_a_closed_visual_boundary() {
+        let rows = rows(
+            &test_snapshot(&[]),
+            &config(vec![OrganizationAgentConfig {
+                id: "manager".into(),
+                label: "Manager".into(),
+                role: "manager".into(),
+                ..Default::default()
+            }]),
+            "local",
+            &HashSet::new(),
+            None,
+        );
+        assert_eq!(rows[0].visual_kind, OrganizationVisualKind::Root);
+        assert!(rows[0].box_end);
     }
 }

@@ -510,7 +510,19 @@ fn render_organization_row(
     if background != ratatui::style::Color::Reset {
         buffer.set_style(rect, Style::default().bg(background));
     }
-    let indent = row.depth.saturating_mul(2);
+    let bordered = matches!(
+        row.visual_kind,
+        super::organization::OrganizationVisualKind::Root
+            | super::organization::OrganizationVisualKind::Coordinator
+            | super::organization::OrganizationVisualKind::Manager
+            | super::organization::OrganizationVisualKind::Worker
+            | super::organization::OrganizationVisualKind::Group
+    );
+    let left = if bordered {
+        rect.x
+    } else {
+        rect.x.saturating_add(row.depth)
+    };
     let marker = if row.expandable {
         if row.collapsed {
             "▸"
@@ -522,34 +534,32 @@ fn render_organization_row(
     } else {
         status_icon(row.status, config.status_indicators)
     };
-    let marker_x = rect
-        .x
-        .saturating_add(indent)
-        .min(rect.right().saturating_sub(1));
+    let marker_x = left.saturating_add(if bordered { 1 } else { 0 });
+    let marker_y = if bordered
+        && !matches!(
+            row.visual_kind,
+            super::organization::OrganizationVisualKind::Worker
+        ) {
+        rect.y.saturating_add(1)
+    } else {
+        rect.y
+    };
     if row.expandable {
         hits.organization_toggles.push((
             Rect::new(
                 marker_x,
-                rect.y,
+                marker_y,
                 1.min(rect.width),
                 u16::from(rect.height > 0),
             ),
             row.key.clone(),
         ));
     }
-    put_text(
-        buffer,
-        marker_x,
-        rect.y,
-        rect.right().saturating_sub(marker_x),
-        marker,
-        Style::default().fg(if row.invalid {
-            palette.yellow
-        } else {
-            status_color(row.status, palette)
-        }),
-    );
-    let label_x = marker_x.saturating_add(2);
+    let marker_style = Style::default().fg(if row.invalid {
+        palette.yellow
+    } else {
+        status_color(row.status, palette)
+    });
     let label_style = Style::default()
         .fg(if row.selected || focused {
             palette.text
@@ -561,32 +571,297 @@ fn render_organization_row(
         } else {
             Modifier::empty()
         });
-    put_text(
-        buffer,
-        label_x,
-        rect.y,
-        rect.right().saturating_sub(label_x),
-        &row.label,
-        label_style,
-    );
-    if rect.height > 1 && !row.meta.is_empty() {
-        let meta_x = label_x.saturating_add(1);
-        for (line_index, line) in row.meta.lines().enumerate() {
-            let y = rect.y.saturating_add(1).saturating_add(line_index as u16);
-            if y >= rect.bottom() {
-                break;
+    match row.visual_kind {
+        super::organization::OrganizationVisualKind::Root => {
+            draw_border_line(
+                buffer,
+                rect,
+                '┌',
+                '┐',
+                &format!(" ARGOS · {} ", row.label),
+                label_style,
+            );
+            draw_box_text(
+                buffer,
+                rect,
+                1,
+                &row.meta,
+                palette,
+                (marker, marker_style, marker_x),
+            );
+            draw_inner_verticals(buffer, rect, 1, palette);
+            if row.box_end && rect.height > 1 {
+                draw_border_line(
+                    buffer,
+                    bottom_rect(rect),
+                    '└',
+                    '┘',
+                    "",
+                    Style::default().fg(palette.overlay0),
+                );
             }
+        }
+        super::organization::OrganizationVisualKind::Coordinator => {
+            draw_box_text(
+                buffer,
+                rect,
+                1,
+                &row.meta,
+                palette,
+                (marker, marker_style, marker_x),
+            );
+            draw_verticals(buffer, rect, palette);
             put_text(
                 buffer,
-                meta_x,
-                y,
-                rect.right().saturating_sub(meta_x),
-                line,
-                Style::default()
-                    .fg(palette.overlay0)
-                    .add_modifier(Modifier::DIM),
+                rect.x.saturating_add(2),
+                rect.y,
+                rect.width.saturating_sub(3),
+                &row.label,
+                label_style,
+            );
+            if row.box_end && rect.height > 1 {
+                draw_border_line(
+                    buffer,
+                    bottom_rect(rect),
+                    '└',
+                    '┘',
+                    "",
+                    Style::default().fg(palette.overlay0),
+                );
+            }
+        }
+        super::organization::OrganizationVisualKind::Manager => {
+            let title = format!(" {} ", row.label);
+            if row.box_start {
+                draw_border_line(buffer, rect, '┌', '┐', &title, label_style);
+            }
+            draw_box_text(
+                buffer,
+                rect,
+                1,
+                &row.meta,
+                palette,
+                (marker, marker_style, marker_x),
+            );
+            draw_inner_verticals(buffer, rect, 1, palette);
+            if row.box_end && rect.height > 1 {
+                draw_border_line(
+                    buffer,
+                    bottom_rect(rect),
+                    '└',
+                    '┘',
+                    "",
+                    Style::default().fg(palette.overlay0),
+                );
+            }
+        }
+        super::organization::OrganizationVisualKind::Worker => {
+            draw_verticals(buffer, rect, palette);
+            put_text(
+                buffer,
+                rect.x,
+                rect.y,
+                1,
+                "├",
+                Style::default().fg(palette.overlay0),
+            );
+            draw_box_text(
+                buffer,
+                rect,
+                0,
+                &format!("{}\n{}", row.label, row.meta),
+                palette,
+                (marker, marker_style, marker_x),
+            );
+            if row.box_end && rect.height > 1 {
+                draw_border_line(
+                    buffer,
+                    bottom_rect(rect),
+                    '└',
+                    '┘',
+                    "",
+                    Style::default().fg(palette.overlay0),
+                );
+            }
+        }
+        super::organization::OrganizationVisualKind::Group => {
+            draw_border_line(
+                buffer,
+                rect,
+                '┌',
+                '┐',
+                &format!(" {} ", row.label),
+                label_style,
+            );
+            draw_box_text(
+                buffer,
+                rect,
+                1,
+                &row.meta,
+                palette,
+                (marker, marker_style, marker_x),
+            );
+            draw_inner_verticals(buffer, rect, 1, palette);
+            if rect.height > 2 {
+                draw_border_line(
+                    buffer,
+                    bottom_rect(rect),
+                    '└',
+                    '┘',
+                    "",
+                    Style::default().fg(palette.overlay0),
+                );
+            }
+        }
+        super::organization::OrganizationVisualKind::Unbound => {
+            put_text(buffer, marker_x, rect.y, rect.width, marker, marker_style);
+            let label_x = marker_x.saturating_add(2);
+            put_text(
+                buffer,
+                label_x,
+                rect.y,
+                rect.right().saturating_sub(label_x),
+                &row.label,
+                label_style,
+            );
+            draw_meta_lines(
+                buffer,
+                rect,
+                label_x.saturating_add(1),
+                &row.meta,
+                palette,
+                1,
             );
         }
+    }
+}
+
+fn draw_border_line(
+    buffer: &mut Buffer,
+    rect: Rect,
+    left: char,
+    right: char,
+    title: &str,
+    style: Style,
+) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let mut line = vec!['─'; rect.width as usize];
+    line[0] = left;
+    if rect.width > 1 {
+        line[rect.width as usize - 1] = right;
+    }
+    let text = line.into_iter().collect::<String>();
+    put_text(buffer, rect.x, rect.y, rect.width, &text, style);
+    if rect.width > 2 {
+        buffer.set_stringn(
+            rect.x.saturating_add(1),
+            rect.y,
+            title,
+            rect.width.saturating_sub(2) as usize,
+            style,
+        );
+    }
+}
+
+fn bottom_rect(rect: Rect) -> Rect {
+    Rect::new(rect.x, rect.bottom().saturating_sub(1), rect.width, 1)
+}
+
+fn draw_verticals(buffer: &mut Buffer, rect: Rect, palette: &Palette) {
+    if rect.width == 0 {
+        return;
+    }
+    let style = Style::default().fg(palette.overlay0);
+    for y in rect.y..rect.bottom() {
+        put_text(buffer, rect.x, y, 1, "│", style);
+        if rect.width > 1 {
+            put_text(buffer, rect.right().saturating_sub(1), y, 1, "│", style);
+        }
+    }
+}
+
+fn draw_inner_verticals(buffer: &mut Buffer, rect: Rect, start: u16, palette: &Palette) {
+    if rect.width == 0 {
+        return;
+    }
+    let style = Style::default().fg(palette.overlay0);
+    let end = rect.bottom();
+    for y in rect.y.saturating_add(start)..end {
+        put_text(buffer, rect.x, y, 1, "│", style);
+        if rect.width > 1 {
+            put_text(buffer, rect.right().saturating_sub(1), y, 1, "│", style);
+        }
+    }
+}
+
+fn draw_box_text(
+    buffer: &mut Buffer,
+    rect: Rect,
+    line_offset: u16,
+    text: &str,
+    palette: &Palette,
+    marker: (&str, Style, u16),
+) {
+    let (marker, marker_style, marker_x) = marker;
+    let content_x = rect.x.saturating_add(2);
+    let content_width = rect.width.saturating_sub(3);
+    put_text(
+        buffer,
+        marker_x,
+        rect.y.saturating_add(line_offset),
+        1,
+        marker,
+        marker_style,
+    );
+    let lines = text.lines().collect::<Vec<_>>();
+    for (index, line) in lines.iter().enumerate() {
+        let y = rect
+            .y
+            .saturating_add(line_offset)
+            .saturating_add(index as u16);
+        if y >= rect.bottom().saturating_sub(1) {
+            break;
+        }
+        put_text(
+            buffer,
+            content_x,
+            y,
+            content_width,
+            line,
+            if line_offset == 0 && index == 0 {
+                Style::default()
+                    .fg(palette.text)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.overlay0)
+            },
+        );
+    }
+}
+
+fn draw_meta_lines(
+    buffer: &mut Buffer,
+    rect: Rect,
+    x: u16,
+    text: &str,
+    palette: &Palette,
+    offset: u16,
+) {
+    for (index, line) in text.lines().enumerate() {
+        let y = rect.y.saturating_add(offset).saturating_add(index as u16);
+        if y >= rect.bottom() {
+            break;
+        }
+        put_text(
+            buffer,
+            x,
+            y,
+            rect.right().saturating_sub(x),
+            line,
+            Style::default().fg(palette.overlay0),
+        );
     }
 }
 

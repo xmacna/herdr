@@ -1047,9 +1047,15 @@ fn organization_navigation_switches_to_projects_and_handles_removed_selection() 
 #[test]
 fn organization_arrow_click_collapses_without_focus_and_leaf_click_focuses() {
     let mut state = organization_navigation_state(1);
-    state.compose(106, 30).expect("organization shell");
+    let frame = state.compose(106, 30).expect("organization shell");
     let (_, manager_key) = state.hits.organization_toggles[0].clone();
     let toggle = state.hits.organization_toggles[0].0;
+    let marker =
+        &frame.cells[usize::from(toggle.y) * usize::from(frame.width) + usize::from(toggle.x)];
+    assert!(
+        matches!(marker.symbol.as_str(), "▾" | "▸"),
+        "marker: {marker:?}"
+    );
     let collapse =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1235,9 +1241,10 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
                 ..Default::default()
             },
             crate::config::OrganizationAgentConfig {
-                id: "worker-reserve".into(),
-                label: "Luna Reserva".into(),
-                role: "worker".into(),
+                id: "argos-reserve".into(),
+                label: "Argos Reserva".into(),
+                role: "coordinator".into(),
+                model: Some("gpt-6-astra".into()),
                 reserved: true,
                 ..Default::default()
             },
@@ -1271,7 +1278,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     // complete organization tree while retaining the upstream default width.
     state.sidebar_section_split = 0.18;
 
-    let wide_frame = state.compose(106, 50).expect("wide shell");
+    let wide_frame = state.compose(106, 60).expect("wide shell");
     let wide_json = serde_json::to_vec(&wide_frame).expect("wide frame json");
     let wide = organization_demo_frame_text(&wide_frame);
     let interface_start = wide.find("Luna Interface").expect("interface row");
@@ -1290,6 +1297,13 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     );
     assert!(wide.contains("Luna Interface"), "wide frame: {wide}");
     assert!(wide.contains("Luna Build"), "wide frame: {wide}");
+    assert!(wide.contains("ARGOS"), "wide frame: {wide}");
+    assert!(wide.contains("Argos Reserva"), "wide frame: {wide}");
+    assert!(wide.contains("reserved · no runtime"), "wide frame: {wide}");
+    assert!(
+        wide.contains("┌"),
+        "wide frame must contain native box borders: {wide}"
+    );
     assert!(wide.contains("done"), "wide frame: {wide}");
     assert!(wide.contains("Organizacao"), "wide frame: {wide}");
     assert!(state
@@ -1298,7 +1312,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
         .iter()
         .any(|(_, pane_id)| pane_id == "pane_argos"));
     assert!(wide.contains("Sem cadastro"), "wide frame: {wide}");
-    assert!(wide.contains("unbound · no runtime"), "wide frame: {wide}");
+    assert!(wide.contains("reserved · no runtime"), "wide frame: {wide}");
     assert!(state
         .hits
         .agents
@@ -1306,6 +1320,19 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
         .any(|(_, pane_id)| pane_id == "pane_2"));
 
     state.sidebar_width = 26;
+    state.navigate_organization_key = None;
+    let narrow_initial_frame = state.compose(72, 22).expect("narrow initial shell");
+    let narrow_initial = organization_demo_frame_text(&narrow_initial_frame);
+    let narrow_initial_json =
+        serde_json::to_vec(&narrow_initial_frame).expect("narrow initial json");
+    assert!(
+        narrow_initial.contains("ARGOS"),
+        "narrow initial: {narrow_initial}"
+    );
+    assert!(
+        narrow_initial.contains("Argos"),
+        "narrow initial: {narrow_initial}"
+    );
     // Narrow capture intentionally keeps a partial viewport; selection and
     // focus must still reveal the requested row without widening the default.
     state.sidebar_section_split = 0.5;
@@ -1337,6 +1364,16 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
             .expect("narrow capture");
         std::fs::write(capture_dir.join("organization-narrow.json"), narrow_json)
             .expect("narrow frame capture");
+        std::fs::write(
+            capture_dir.join("organization-narrow-initial.txt"),
+            narrow_initial,
+        )
+        .expect("narrow initial capture");
+        std::fs::write(
+            capture_dir.join("organization-narrow-initial.json"),
+            narrow_initial_json,
+        )
+        .expect("narrow initial frame capture");
     }
 }
 
