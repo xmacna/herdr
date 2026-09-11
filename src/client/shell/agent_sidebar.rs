@@ -188,7 +188,10 @@ pub(super) fn render_agent_panel_header(
         area.y + 1,
         area.width,
         if organization {
-            " organization"
+            match config.organization_locale {
+                crate::config::OrganizationLocale::Portuguese => " organização",
+                crate::config::OrganizationLocale::English => " organization",
+            }
         } else {
             " agents"
         },
@@ -197,13 +200,24 @@ pub(super) fn render_agent_panel_header(
             .add_modifier(Modifier::BOLD),
     );
     let sort_label = agent_view_label.unwrap_or(if organization {
-        "tree"
+        match config.organization_locale {
+            crate::config::OrganizationLocale::Portuguese => "árvore",
+            crate::config::OrganizationLocale::English => "tree",
+        }
     } else {
         match config.agent_panel_sort {
             crate::config::AgentPanelSortConfig::Spaces => "grouped",
             crate::config::AgentPanelSortConfig::Priority => "priority",
         }
     });
+    let sort_label = if organization && agent_view_label.is_none() {
+        match config.organization_locale {
+            crate::config::OrganizationLocale::Portuguese => "árvore · PT",
+            crate::config::OrganizationLocale::English => "tree · EN",
+        }
+    } else {
+        sort_label
+    };
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
     let sort_rect = Rect::new(
         area.right().saturating_sub(sort_width),
@@ -470,12 +484,13 @@ pub(super) fn organization_rows(
     collapsed: &HashSet<String>,
     selected: Option<&str>,
 ) -> Vec<AgentRow> {
-    super::organization::rows(
+    super::organization::rows_with_locale(
         snapshot,
         &config.organization,
         endpoint_scope,
         collapsed,
         selected,
+        config.organization_locale,
     )
     .into_iter()
     .map(|organization| AgentRow {

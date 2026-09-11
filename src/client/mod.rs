@@ -715,6 +715,19 @@ async fn run_client_loop(
         if let Some(shell) = state.shell.as_mut() {
             shell.tick_popup_pending(now);
         }
+        let organization_registry_changed = state
+            .shell
+            .as_mut()
+            .is_some_and(|shell| shell.tick_organization_registry(now));
+        if organization_registry_changed {
+            if let Some(frame) = state
+                .shell
+                .as_mut()
+                .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
+            {
+                state.present_frame(frame);
+            }
+        }
 
         match event {
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),

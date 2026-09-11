@@ -1,6 +1,26 @@
 // Modified under the Apache License, Version 2.0; see LICENSE.
 use super::*;
 
+#[derive(serde::Deserialize)]
+struct OrganizationRegistryFile {
+    schema_version: u32,
+    agents: Vec<crate::config::OrganizationAgentConfig>,
+}
+
+const ORGANIZATION_REGISTRY_CHECK_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(500);
+
+fn organization_registry_fingerprint(metadata: &std::fs::Metadata) -> (u64, u128) {
+    (
+        metadata.len(),
+        metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |duration| duration.as_nanos()),
+    )
+}
+
 pub(super) fn merged_config_diagnostic(
     local: Option<&str>,
     endpoint: Option<&str>,
@@ -17,6 +37,97 @@ pub(super) fn merged_config_diagnostic(
 }
 
 impl ClientShellState {
+    pub(crate) fn tick_organization_registry(&mut self, now: std::time::Instant) -> bool {
+        if self.organization_registry_last_check.is_some_and(|last| {
+            now.saturating_duration_since(last) < ORGANIZATION_REGISTRY_CHECK_INTERVAL
+        }) {
+            return false;
+        }
+        self.organization_registry_last_check = Some(now);
+        let before = self.organization_registry_fingerprint;
+        let before_error = self.endpoint_error.clone();
+        self.reload_organization_registry();
+        before != self.organization_registry_fingerprint || before_error != self.endpoint_error
+    }
+
+    fn set_organization_registry_error(&mut self, error: String) {
+        if self.endpoint_error.is_none()
+            || self
+                .endpoint_error
+                .as_deref()
+                .is_some_and(|current| current.starts_with("organization registry "))
+        {
+            self.endpoint_error = Some(error);
+        }
+    }
+
+    fn clear_organization_registry_error(&mut self) {
+        if self
+            .endpoint_error
+            .as_deref()
+            .is_some_and(|current| current.starts_with("organization registry "))
+        {
+            self.endpoint_error = None;
+        }
+    }
+
+    pub(super) fn reload_organization_registry(&mut self) {
+        let Some(registry_path) = self.config.organization.registry_path.as_deref() else {
+            self.organization_registry_fingerprint = None;
+            self.organization_registry_observed_fingerprint = None;
+            self.clear_organization_registry_error();
+            return;
+        };
+        let path = std::path::Path::new(registry_path);
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.organization_registry_observed_fingerprint = None;
+                self.set_organization_registry_error(format!(
+                    "organization registry unavailable ({}): {error}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+        let fingerprint = organization_registry_fingerprint(&metadata);
+        if self.organization_registry_observed_fingerprint == Some(fingerprint) {
+            return;
+        }
+        self.organization_registry_observed_fingerprint = Some(fingerprint);
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) => {
+                self.set_organization_registry_error(format!(
+                    "organization registry unreadable ({}): {error}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+        let registry = match serde_json::from_str::<OrganizationRegistryFile>(&content) {
+            Ok(registry) if registry.schema_version == 1 => registry,
+            Ok(registry) => {
+                self.set_organization_registry_error(format!(
+                    "organization registry schema {} unsupported ({})",
+                    registry.schema_version,
+                    path.display()
+                ));
+                return;
+            }
+            Err(error) => {
+                self.set_organization_registry_error(format!(
+                    "organization registry invalid ({}): {error}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+        self.config.organization.agents = registry.agents;
+        self.organization_registry_fingerprint = Some(fingerprint);
+        self.clear_organization_registry_error();
+    }
+
     pub(super) fn set_local_config_diagnostic(&mut self, diagnostic: Option<String>) {
         self.local_config_diagnostic = diagnostic;
         self.config_diagnostic = merged_config_diagnostic(
@@ -54,6 +165,9 @@ impl ClientShellState {
                 values.sort();
                 values
             },
+            organization_locale: self
+                .organization_locale_manual
+                .then_some(self.config.organization_locale.code().to_owned()),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.endpoint_error = Some(error);
@@ -65,6 +179,10 @@ impl ClientShellState {
         match crate::config::load_live_config() {
             Ok(loaded) => {
                 let agent_panel_sort = self.config.agent_panel_sort;
+                let organization_locale = self.config.organization_locale;
+                let registry_path = self.config.organization.registry_path.clone();
+                let registry_agents = self.config.organization.agents.clone();
+                let registry_loaded = self.organization_registry_fingerprint.is_some();
                 let diagnostics = self.config.apply_live_config(
                     &loaded.config,
                     &loaded.diagnostics,
@@ -82,6 +200,19 @@ impl ClientShellState {
                 if self.agent_panel_sort_manual {
                     self.config.agent_panel_sort = agent_panel_sort;
                 }
+                if self.organization_locale_manual {
+                    self.config.organization_locale = organization_locale;
+                }
+                if registry_path != self.config.organization.registry_path {
+                    self.organization_registry_fingerprint = None;
+                    self.organization_registry_observed_fingerprint = None;
+                    self.organization_registry_last_check = None;
+                } else if registry_loaded {
+                    // The JSON registry owns agents while its path is configured. Preserve the
+                    // last valid projection while the TOML shell config is reloaded.
+                    self.config.organization.agents = registry_agents;
+                }
+                self.reload_organization_registry();
                 self.set_local_config_diagnostic(self.config.local_config_diagnostic(&diagnostics));
                 if let Some(snapshot) = self.snapshot.as_deref() {
                     let profile = snapshot.server_keybindings_toml.clone();
@@ -118,6 +249,7 @@ impl ClientShellConfig {
             agents: config.ui.sidebar.agents.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
             organization: config.ui.organization.clone(),
+            organization_locale: config.ui.organization.locale(),
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
             toast_delivery: config.ui.toast.delivery,
@@ -321,6 +453,7 @@ impl ClientShellConfig {
                 self.agents = ui.sidebar.agents.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.organization = ui.organization.clone();
+                self.organization_locale = self.organization.locale();
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;
                 self.toast_delivery = ui.toast.delivery;
@@ -454,6 +587,14 @@ mod tests {
         next.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
         next.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
         next.ui.sidebar.agents = toml::from_str("rows = [[{ token = 'machine', rules = [{ equals = 'Local', bold = true }] }]]\nrow_gap = 2").unwrap();
+        next.ui.organization.enabled = true;
+        next.ui.organization.agents = vec![crate::config::OrganizationAgentConfig {
+            id: "new-worker".into(),
+            label: "Novo funcionário".into(),
+            parent_id: Some("manager".into()),
+            role: "worker".into(),
+            ..Default::default()
+        }];
         next.keys.prefix = "ctrl+a".to_owned();
 
         let diagnostics = shell.apply_live_config(&next, &[], &[]);
@@ -470,6 +611,12 @@ mod tests {
             crate::config::StatusIndicatorStyle::Symbols
         );
         assert_eq!(shell.agents.row_gap, 2);
+        assert!(shell.organization.enabled);
+        assert_eq!(shell.organization.agents[0].id, "new-worker");
+        assert_eq!(
+            shell.organization.agents[0].parent_id.as_deref(),
+            Some("manager")
+        );
         assert_eq!(
             shell.agents.rows[0][0].style_for_value("Local").bold,
             Some(true)
@@ -529,5 +676,104 @@ mod tests {
             shell.keybinds.prefix,
             (KeyCode::Char('x'), KeyModifiers::CONTROL)
         );
+    }
+
+    #[test]
+    fn organization_registry_reload_is_cached_and_keeps_last_valid_read() {
+        let path = std::env::temp_dir().join(format!(
+            "herdr-organization-registry-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let mut config = Config::default();
+        config.ui.organization.enabled = true;
+        config.ui.organization.registry_path = Some(path.display().to_string());
+        let mut shell = ClientShellState::new(ClientShellConfig::from_config(&config));
+        std::fs::write(
+            &path,
+            r#"{
+                "schema_version": 1,
+                "agents": [{
+                    "id": "worker",
+                    "name": "Interface",
+                    "display_name": "Interface",
+                    "pane_id": "w1:p1",
+                    "role": "worker",
+                    "function": "Interface nativa",
+                    "task": {"summary": "Implementar a interface", "source": "brief:test"}
+                }]
+            }"#,
+        )
+        .expect("write valid registry");
+        assert!(shell.tick_organization_registry(std::time::Instant::now()));
+        assert_eq!(shell.config.organization.agents.len(), 1);
+        assert_eq!(
+            shell.config.organization.agents[0].display_name.as_deref(),
+            Some("Interface")
+        );
+        assert_eq!(
+            shell.config.organization.agents[0].name.as_deref(),
+            Some("Interface")
+        );
+        assert_eq!(
+            shell.config.organization.agents[0].task.as_deref(),
+            Some("Implementar a interface")
+        );
+        assert!(shell.endpoint_error.is_none());
+
+        std::fs::write(
+            &path,
+            r#"{
+                "schema_version": 1,
+                "agents": [{"id": "worker-2", "display_name": "Build"}]
+            }"#,
+        )
+        .expect("write changed registry");
+        assert!(shell.tick_organization_registry(
+            std::time::Instant::now() + std::time::Duration::from_secs(1)
+        ));
+        assert_eq!(shell.config.organization.agents[0].id, "worker-2");
+
+        std::fs::write(&path, "{\"schema_version\": 1, \"agents\": [")
+            .expect("write partial registry");
+        assert!(shell.tick_organization_registry(
+            std::time::Instant::now() + std::time::Duration::from_secs(2)
+        ));
+        assert_eq!(shell.config.organization.agents[0].id, "worker-2");
+        assert!(shell
+            .endpoint_error
+            .as_deref()
+            .is_some_and(|error| error.contains("organization registry invalid")));
+        std::fs::write(
+            &path,
+            r#"{
+                "schema_version": 1,
+                "agents": [{"id": "worker-3", "display_name": "Recovered"}]
+            }"#,
+        )
+        .expect("write recovered registry");
+        assert!(shell.tick_organization_registry(
+            std::time::Instant::now() + std::time::Duration::from_secs(3)
+        ));
+        assert_eq!(shell.config.organization.agents[0].id, "worker-3");
+        assert!(shell.endpoint_error.is_none());
+
+        shell.endpoint_error = Some("endpoint offline".into());
+        std::fs::write(
+            &path,
+            r#"{
+                "schema_version": 1,
+                "agents": [{"id": "worker-4", "display_name": "Still available"}]
+            }"#,
+        )
+        .expect("write registry beside endpoint error");
+        assert!(shell.tick_organization_registry(
+            std::time::Instant::now() + std::time::Duration::from_secs(4)
+        ));
+        assert_eq!(shell.endpoint_error.as_deref(), Some("endpoint offline"));
+        std::fs::remove_file(path).expect("remove registry fixture");
     }
 }

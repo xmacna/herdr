@@ -40,6 +40,7 @@ pub(super) fn render_mode_bar(
     palette: &Palette,
     organization_enabled: bool,
     organization_selected: bool,
+    organization_locale: crate::config::OrganizationLocale,
 ) -> Option<Rect> {
     if (mode == ClientShellMode::Terminal && endpoint_error.is_none()) || pane_area.is_empty() {
         return None;
@@ -101,27 +102,44 @@ pub(super) fn render_mode_bar(
                 ]);
             }
             ClientShellMode::Navigate => {
+                let (tree, fold, projects, focus, workspace) = match organization_locale {
+                    crate::config::OrganizationLocale::Portuguese => {
+                        ("árvore", "recolher", "projetos", "foco", "workspace")
+                    }
+                    crate::config::OrganizationLocale::English => {
+                        ("tree", "fold", "projects", "focus", "workspace")
+                    }
+                };
                 if organization_selected {
                     if pane_area.width < 60 {
+                        let (tree, fold, projects, focus) = match organization_locale {
+                            crate::config::OrganizationLocale::Portuguese => {
+                                ("árv", "dob", "proj", "foc")
+                            }
+                            crate::config::OrganizationLocale::English => {
+                                ("tree", "fold", "proj", "foc")
+                            }
+                        };
                         segments.push((" NAV ".to_owned(), mode_style));
                         segments.extend([
-                            ("\u{2191}\u{2193}tree ".to_owned(), key),
-                            ("\u{2190}\u{2192}fold ".to_owned(), key),
-                            ("Tab>projects ".to_owned(), base),
-                            ("Enter>focus".to_owned(), key),
+                            (format!("\u{2191}\u{2193}{tree} "), key),
+                            (format!("\u{2190}\u{2192}{fold} "), key),
+                            (format!("T>{projects} "), base),
+                            (format!("E>{focus} "), key),
+                            ("L".to_owned(), key),
                         ]);
                     } else {
                         segments.extend([
                             (" NAVIGATE ".to_owned(), mode_style),
                             (" esc ".to_owned(), base),
                             ("\u{2191}\u{2193}".to_owned(), key),
-                            (" tree ".to_owned(), base),
+                            (format!(" {tree} "), base),
                             ("\u{2190}\u{2192}".to_owned(), key),
-                            (" fold ".to_owned(), base),
+                            (format!(" {fold} "), base),
                             ("tab".to_owned(), key),
-                            (" projects ".to_owned(), base),
+                            (format!(" {projects} "), base),
                             ("enter".to_owned(), key),
-                            (" focus".to_owned(), base),
+                            (format!(" {focus} l PT/EN"), base),
                         ]);
                     }
                 } else if organization_enabled {
@@ -129,11 +147,11 @@ pub(super) fn render_mode_bar(
                         (" NAVIGATE ".to_owned(), mode_style),
                         (" esc back  ".to_owned(), base),
                         ("\u{2191}/\u{2193}".to_owned(), key),
-                        (" workspace  ".to_owned(), base),
+                        (format!(" {workspace}  "), base),
                         ("tab".to_owned(), key),
-                        (" tree  ".to_owned(), base),
+                        (format!(" {tree}  "), base),
                         ("enter".to_owned(), key),
-                        (" focus  ".to_owned(), base),
+                        (format!(" {focus}  "), base),
                         (prefix_rhs(&keybinds.keybinds.help), key),
                         (" keybinds".to_owned(), base),
                     ]);

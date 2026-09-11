@@ -22,6 +22,8 @@ pub(super) struct ClientChromePreferences {
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) organization_collapsed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) organization_locale: Option<String>,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

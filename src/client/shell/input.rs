@@ -862,6 +862,20 @@ impl ClientShellState {
         if !modifiers.is_empty() {
             return false;
         }
+        if matches!(code, KeyCode::Char('l' | 'L')) {
+            self.config.organization_locale = match self.config.organization_locale {
+                crate::config::OrganizationLocale::Portuguese => {
+                    crate::config::OrganizationLocale::English
+                }
+                crate::config::OrganizationLocale::English => {
+                    crate::config::OrganizationLocale::Portuguese
+                }
+            };
+            self.organization_locale_manual = true;
+            self.persist_chrome_preferences(outcome);
+            outcome.repaint = true;
+            return true;
+        }
         if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
             self.navigate_organization_key = None;
             self.navigate_workspace_id = self

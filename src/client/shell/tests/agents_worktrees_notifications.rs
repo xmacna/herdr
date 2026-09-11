@@ -979,6 +979,48 @@ fn organization_disabled_keeps_the_normal_agent_sidebar_path() {
 }
 
 #[test]
+fn organization_locale_selector_persists_across_client_instances() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-organization-locale-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let mut state = organization_navigation_state(1);
+    state.config.preferences_path = Some(path.clone());
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    assert_eq!(
+        state.config.organization_locale,
+        crate::config::OrganizationLocale::Portuguese
+    );
+    state.handle_input_bytes(b"l");
+    assert_eq!(
+        state.config.organization_locale,
+        crate::config::OrganizationLocale::English
+    );
+    assert_eq!(
+        crate::client::shell::preferences::load(&path)
+            .and_then(|preferences| preferences.organization_locale),
+        Some("en".into())
+    );
+
+    let config = state.config.organization.clone();
+    let mut reloaded_config = Config::default();
+    reloaded_config.ui.organization = config;
+    let reloaded_shell_config =
+        ClientShellConfig::from_config(&reloaded_config).with_preferences_path(path.clone());
+    let reloaded = ClientShellState::new(reloaded_shell_config);
+    assert_eq!(
+        reloaded.config.organization_locale,
+        crate::config::OrganizationLocale::English
+    );
+    std::fs::remove_file(path).expect("remove organization locale preferences");
+}
+
+#[test]
 fn organization_navigation_reveals_worker_and_focuses_the_selected_pane() {
     let mut state = organization_navigation_state(12);
     assert!(state.handle_input_bytes(&[0x02]).actions.is_empty());
@@ -1024,7 +1066,7 @@ fn organization_navigation_switches_to_projects_and_handles_removed_selection() 
     let projects_frame = state.compose(106, 30).expect("projects navigation shell");
     let projects_text = organization_demo_frame_text(&projects_frame);
     assert!(
-        projects_text.contains("tab tree"),
+        projects_text.contains("tab árvore"),
         "projects footer: {projects_text}"
     );
     assert!(
@@ -1174,6 +1216,8 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     config.ui.sidebar_width = 42;
     config.ui.organization = crate::config::OrganizationConfig {
         enabled: true,
+        registry_path: None,
+        locale: "pt".into(),
         root: "Organizacao".into(),
         reserve_label: "Reserva".into(),
         orphan_label: "Sem cadastro".into(),
@@ -1299,12 +1343,12 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     assert!(wide.contains("Luna Build"), "wide frame: {wide}");
     assert!(wide.contains("ARGOS"), "wide frame: {wide}");
     assert!(wide.contains("Argos Reserva"), "wide frame: {wide}");
-    assert!(wide.contains("reserved · no runtime"), "wide frame: {wide}");
+    assert!(wide.contains("Reserva · sem runtime"), "wide frame: {wide}");
     assert!(
         wide.contains("┌"),
         "wide frame must contain native box borders: {wide}"
     );
-    assert!(wide.contains("done"), "wide frame: {wide}");
+    assert!(wide.contains("Concluiu"), "wide frame: {wide}");
     assert!(wide.contains("Organizacao"), "wide frame: {wide}");
     assert!(state
         .hits
@@ -1312,7 +1356,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
         .iter()
         .any(|(_, pane_id)| pane_id == "pane_argos"));
     assert!(wide.contains("Sem cadastro"), "wide frame: {wide}");
-    assert!(wide.contains("reserved · no runtime"), "wide frame: {wide}");
+    assert!(wide.contains("Reserva · sem runtime"), "wide frame: {wide}");
     assert!(state
         .hits
         .agents
@@ -1344,9 +1388,10 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     let narrow_json = serde_json::to_vec(&narrow_frame).expect("narrow frame json");
     let narrow = organization_demo_frame_text(&narrow_frame);
     assert!(narrow.contains("Luna Interface"), "narrow frame: {narrow}");
-    assert!(narrow.contains("↑↓tree"), "narrow footer: {narrow}");
-    assert!(narrow.contains("Tab>projects"), "narrow footer: {narrow}");
-    assert!(narrow.contains("Enter>focus"), "narrow footer: {narrow}");
+    assert!(narrow.contains("↑↓árv"), "narrow footer: {narrow}");
+    assert!(narrow.contains("T>proj"), "narrow footer: {narrow}");
+    assert!(narrow.contains("E>foc"), "narrow footer: {narrow}");
+    assert!(narrow.contains("L"), "narrow locale selector: {narrow}");
     assert!(!narrow.contains("tab pane"), "narrow footer: {narrow}");
     assert!(state
         .hits

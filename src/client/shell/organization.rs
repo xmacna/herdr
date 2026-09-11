@@ -2,7 +2,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::api::schema::AgentStatus;
-use crate::config::{OrganizationAgentConfig, OrganizationConfig};
+use crate::config::{OrganizationAgentConfig, OrganizationConfig, OrganizationLocale};
 use crate::protocol::{ClientShellAgent, ClientShellSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +79,41 @@ fn status_max(left: AgentStatus, right: AgentStatus) -> AgentStatus {
     }
 }
 
+fn organization_status_text(status: AgentStatus, locale: OrganizationLocale) -> &'static str {
+    match (locale, status) {
+        (OrganizationLocale::Portuguese, AgentStatus::Working) => "Trabalhando",
+        (OrganizationLocale::Portuguese, AgentStatus::Idle) => "Disponível",
+        (OrganizationLocale::Portuguese, AgentStatus::Done) => "Concluiu",
+        (OrganizationLocale::Portuguese, AgentStatus::Blocked) => "Precisa de atenção",
+        (OrganizationLocale::Portuguese, AgentStatus::Unknown) => "Estado não confirmado",
+        (OrganizationLocale::English, AgentStatus::Working) => "Working",
+        (OrganizationLocale::English, AgentStatus::Idle) => "Available",
+        (OrganizationLocale::English, AgentStatus::Done) => "Done",
+        (OrganizationLocale::English, AgentStatus::Blocked) => "Needs attention",
+        (OrganizationLocale::English, AgentStatus::Unknown) => "State not confirmed",
+    }
+}
+
+fn organization_role_text(role: &str, locale: OrganizationLocale) -> Option<String> {
+    match (locale, role.trim().to_ascii_lowercase().as_str()) {
+        (OrganizationLocale::Portuguese, "coordinator" | "coordenador") => {
+            Some("Coordenador".to_owned())
+        }
+        (OrganizationLocale::Portuguese, "manager" | "gerente") => Some("Gerente".to_owned()),
+        (OrganizationLocale::Portuguese, "worker" | "funcionário" | "funcionario") => {
+            Some("Funcionário".to_owned())
+        }
+        (OrganizationLocale::English, "coordinator" | "coordenador") => {
+            Some("Coordinator".to_owned())
+        }
+        (OrganizationLocale::English, "manager" | "gerente") => Some("Manager".to_owned()),
+        (OrganizationLocale::English, "worker" | "funcionário" | "funcionario") => {
+            Some("Worker".to_owned())
+        }
+        _ => None,
+    }
+}
+
 fn runtime_label(agent: &ClientShellAgent) -> String {
     agent
         .display_agent
@@ -88,6 +123,16 @@ fn runtime_label(agent: &ClientShellAgent) -> String {
         .or(agent.title.as_deref())
         .unwrap_or("unnamed agent")
         .to_owned()
+}
+
+fn configured_label(entry: &OrganizationAgentConfig) -> Option<String> {
+    entry
+        .label
+        .trim()
+        .is_empty()
+        .then(|| entry.display_name.clone())
+        .flatten()
+        .or_else(|| (!entry.label.trim().is_empty()).then(|| entry.label.clone()))
 }
 
 fn join_meta(parts: impl IntoIterator<Item = Option<String>>) -> String {
@@ -104,22 +149,32 @@ fn configured_meta(
     status: AgentStatus,
     attention: usize,
     runtime_present: bool,
+    locale: OrganizationLocale,
 ) -> String {
     let lines = [
         join_meta([
+            organization_role_text(&entry.role, locale),
             entry.model.clone(),
-            (!entry.role.trim().is_empty()).then(|| entry.role.clone()),
         ]),
-        join_meta([entry.task.clone()]),
+        join_meta([entry.task.clone().or_else(|| entry.function.clone())]),
         join_meta([
             Some(if !runtime_present && entry.reserved {
-                "reserved · no runtime".to_owned()
+                match locale {
+                    OrganizationLocale::Portuguese => "Reserva · sem runtime".to_owned(),
+                    OrganizationLocale::English => "Reserve · no runtime".to_owned(),
+                }
             } else if !runtime_present {
-                "unbound · no runtime".to_owned()
+                match locale {
+                    OrganizationLocale::Portuguese => "Cadastrado · sem runtime".to_owned(),
+                    OrganizationLocale::English => "Registered · no runtime".to_owned(),
+                }
             } else if attention > 0 {
-                format!("! {attention}")
+                format!(
+                    "{} · ! {attention}",
+                    organization_status_text(status, locale)
+                )
             } else {
-                super::status_text(status).to_owned()
+                organization_status_text(status, locale).to_owned()
             }),
             entry.owner_id.clone().map(|owner| format!("owner {owner}")),
             entry.area.clone(),
@@ -229,23 +284,27 @@ fn emit_configured(
     selected: Option<&str>,
     rows: &mut Vec<OrganizationRow>,
     keys: &[String],
+    locale: OrganizationLocale,
 ) {
     let entry = &entries[index];
     let key = keys[index].clone();
     let (status, attention) = aggregate[index];
     let expandable = !children[index].is_empty();
     let is_collapsed = collapsed.contains(&key);
-    let label = if entry.label.trim().is_empty() {
+    let label = if configured_label(entry).is_none() {
         runtime[index]
             .map(runtime_label)
             .unwrap_or_else(|| entry.id.clone())
     } else {
-        entry.label.clone()
+        configured_label(entry).unwrap_or_default()
     };
     let meta = if invalid[index] {
-        "pending · invalid registration".to_owned()
+        match locale {
+            OrganizationLocale::Portuguese => "Cadastro pendente · registro inválido".to_owned(),
+            OrganizationLocale::English => "Registration pending · invalid registration".to_owned(),
+        }
     } else {
-        configured_meta(entry, status, attention, runtime[index].is_some())
+        configured_meta(entry, status, attention, runtime[index].is_some(), locale)
     };
     let visual_kind = visual_kind(entry, expandable);
     rows.push(OrganizationRow {
@@ -282,6 +341,7 @@ fn emit_configured(
             selected,
             rows,
             keys,
+            locale,
         );
     }
 }
@@ -301,6 +361,24 @@ pub(super) fn rows(
     endpoint_scope: &str,
     collapsed: &HashSet<String>,
     selected: Option<&str>,
+) -> Vec<OrganizationRow> {
+    rows_with_locale(
+        snapshot,
+        config,
+        endpoint_scope,
+        collapsed,
+        selected,
+        config.locale(),
+    )
+}
+
+pub(super) fn rows_with_locale(
+    snapshot: &ClientShellSnapshot,
+    config: &OrganizationConfig,
+    endpoint_scope: &str,
+    collapsed: &HashSet<String>,
+    selected: Option<&str>,
+    locale: OrganizationLocale,
 ) -> Vec<OrganizationRow> {
     let entries = config
         .agents
@@ -413,9 +491,15 @@ pub(super) fn rows(
         if invalid[index] {
             let (status, attention) = aggregate[index];
             let reason = if duplicate_panes.contains(&index) {
-                "duplicate pane binding"
+                match locale {
+                    OrganizationLocale::Portuguese => "vínculo de pane duplicado",
+                    OrganizationLocale::English => "duplicate pane binding",
+                }
             } else {
-                "duplicate, missing parent, or cycle"
+                match locale {
+                    OrganizationLocale::Portuguese => "id duplicado, pai ausente ou ciclo",
+                    OrganizationLocale::English => "duplicate id, missing parent, or cycle",
+                }
             };
             let attention = if duplicate_panes.contains(&index) {
                 0
@@ -425,12 +509,18 @@ pub(super) fn rows(
             pending.push(OrganizationRow {
                 key: keys[index].clone(),
                 parent_key: Some(scoped_group(endpoint_scope, "pending")),
-                label: if entries[index].label.is_empty() {
+                label: if configured_label(&entries[index]).is_none() {
                     entries[index].id.clone()
                 } else {
-                    entries[index].label.clone()
+                    configured_label(&entries[index]).unwrap_or_default()
                 },
-                meta: format!("pending · {reason}"),
+                meta: format!(
+                    "{} · {reason}",
+                    match locale {
+                        OrganizationLocale::Portuguese => "Cadastro pendente",
+                        OrganizationLocale::English => "Registration pending",
+                    }
+                ),
                 depth: 2,
                 status,
                 attention,
@@ -473,10 +563,14 @@ pub(super) fn rows(
     rows.push(OrganizationRow {
         key: scope_root.clone(),
         parent_key: None,
-        label: config.root_label().to_owned(),
+        label: config.root_label_for(locale).to_owned(),
         meta: format!(
-            "{} agents{}",
+            "{} {}{}",
             snapshot.agents.len(),
+            match locale {
+                OrganizationLocale::Portuguese => "agentes",
+                OrganizationLocale::English => "agents",
+            },
             if root_attention > 0 {
                 format!(" · ! {root_attention}")
             } else {
@@ -523,6 +617,7 @@ pub(super) fn rows(
                 selected,
                 &mut rows,
                 &keys,
+                locale,
             );
         }
         // `reserved_coordinators` has not been moved into the reserve group,
@@ -541,6 +636,7 @@ pub(super) fn rows(
                 selected,
                 &mut rows,
                 &keys,
+                locale,
             );
         }
         move_coordinators_to_panel(&mut rows);
@@ -560,6 +656,7 @@ pub(super) fn rows(
             selected,
             &mut rows,
             &keys,
+            locale,
         );
     }
     for index in reserved_coordinators {
@@ -576,6 +673,7 @@ pub(super) fn rows(
             selected,
             &mut rows,
             &keys,
+            locale,
         );
     }
     if !reserved_indices.is_empty() {
@@ -593,10 +691,14 @@ pub(super) fn rows(
         rows.push(OrganizationRow {
             key: key.clone(),
             parent_key: Some(scope_root.clone()),
-            label: config.reserve_label().to_owned(),
+            label: config.reserve_label_for(locale).to_owned(),
             meta: format!(
-                "{} entries{}",
+                "{} {}{}",
                 reserved_indices.len(),
+                match locale {
+                    OrganizationLocale::Portuguese => "cadastros",
+                    OrganizationLocale::English => "registrations",
+                },
                 if attention > 0 {
                     format!(" · ! {attention}")
                 } else {
@@ -630,6 +732,7 @@ pub(super) fn rows(
                     selected,
                     &mut rows,
                     &keys,
+                    locale,
                 );
             }
         }
@@ -644,7 +747,14 @@ pub(super) fn rows(
                 key: key.clone(),
                 parent_key: Some(scoped_group(endpoint_scope, "orphan")),
                 label: runtime_label(agent),
-                meta: format!("unregistered · {}", super::status_text(agent.agent_status)),
+                meta: format!(
+                    "{} · {}",
+                    match locale {
+                        OrganizationLocale::Portuguese => "Sem cadastro",
+                        OrganizationLocale::English => "Unassigned",
+                    },
+                    organization_status_text(agent.agent_status, locale)
+                ),
                 depth: 2,
                 status: agent.agent_status,
                 attention: usize::from(agent.agent_status == AgentStatus::Blocked),
@@ -663,22 +773,24 @@ pub(super) fn rows(
     virtual_group(
         endpoint_scope,
         "orphan",
-        config.orphan_label(),
+        config.orphan_label_for(locale),
         1,
         &orphan_rows,
         collapsed,
         selected,
         &mut rows,
+        locale,
     );
     virtual_group(
         endpoint_scope,
         "pending",
-        config.pending_label(),
+        config.pending_label_for(locale),
         1,
         &pending,
         collapsed,
         selected,
         &mut rows,
+        locale,
     );
     move_coordinators_to_panel(&mut rows);
     annotate_visual_boxes(&mut rows);
@@ -753,6 +865,7 @@ fn virtual_group(
     collapsed: &HashSet<String>,
     selected: Option<&str>,
     rows: &mut Vec<OrganizationRow>,
+    locale: OrganizationLocale,
 ) {
     if items.is_empty() {
         return;
@@ -770,8 +883,12 @@ fn virtual_group(
         parent_key: Some(scoped_group(scope, "root")),
         label: label.to_owned(),
         meta: format!(
-            "{} entries{}",
+            "{} {}{}",
             items.len(),
+            match locale {
+                OrganizationLocale::Portuguese => "cadastros",
+                OrganizationLocale::English => "registrations",
+            },
             if attention > 0 {
                 format!(" · ! {attention}")
             } else {
@@ -829,6 +946,100 @@ mod tests {
             agents: entries,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn organization_rows_use_human_roles_states_and_explicit_registration_status() {
+        let rows = rows(
+            &test_snapshot(&[
+                ("working", AgentStatus::Working),
+                ("idle", AgentStatus::Idle),
+                ("done", AgentStatus::Done),
+                ("blocked", AgentStatus::Blocked),
+            ]),
+            &config(vec![
+                OrganizationAgentConfig {
+                    id: "working".into(),
+                    label: "Equipe ativa".into(),
+                    pane_id: Some("working".into()),
+                    role: "manager".into(),
+                    model: Some("gpt-5.6-luna".into()),
+                    task: Some("Revisar a entrega".into()),
+                    ..Default::default()
+                },
+                OrganizationAgentConfig {
+                    id: "idle".into(),
+                    label: "Equipe disponivel".into(),
+                    pane_id: Some("idle".into()),
+                    role: "worker".into(),
+                    ..Default::default()
+                },
+                OrganizationAgentConfig {
+                    id: "done".into(),
+                    label: "Equipe concluida".into(),
+                    pane_id: Some("done".into()),
+                    role: "funcionario".into(),
+                    ..Default::default()
+                },
+                OrganizationAgentConfig {
+                    id: "blocked".into(),
+                    label: "Equipe atencao".into(),
+                    pane_id: Some("blocked".into()),
+                    role: "coordenador".into(),
+                    ..Default::default()
+                },
+                OrganizationAgentConfig {
+                    id: "reserved".into(),
+                    label: "Reserva Fable".into(),
+                    role: "worker".into(),
+                    reserved: true,
+                    ..Default::default()
+                },
+            ]),
+            "local",
+            &HashSet::new(),
+            None,
+        );
+        let meta = |label: &str| {
+            rows.iter()
+                .find(|row| row.label == label)
+                .map(|row| row.meta.as_str())
+                .unwrap_or_else(|| panic!("missing organization row {label}"))
+        };
+        assert!(meta("Equipe ativa").contains("Gerente"));
+        assert!(meta("Equipe ativa").contains("gpt-5.6-luna"));
+        assert!(meta("Equipe ativa").contains("Revisar a entrega"));
+        assert!(meta("Equipe ativa").contains("Trabalhando"));
+        assert!(meta("Equipe disponivel").contains("Disponível"));
+        assert!(meta("Equipe concluida").contains("Concluiu"));
+        assert!(meta("Equipe atencao").contains("Precisa de atenção · ! 1"));
+        assert!(meta("Reserva Fable").contains("Reserva · sem runtime"));
+        assert!(!meta("Equipe atencao").contains("Aguardando"));
+    }
+
+    #[test]
+    fn organization_rows_render_the_same_registration_in_english() {
+        let mut organization = config(vec![OrganizationAgentConfig {
+            id: "worker".into(),
+            label: "Interface".into(),
+            pane_id: Some("worker".into()),
+            role: "worker".into(),
+            function: Some("Native interface".into()),
+            ..Default::default()
+        }]);
+        organization.locale = "en".into();
+        let rows = rows(
+            &test_snapshot(&[("worker", AgentStatus::Working)]),
+            &organization,
+            "local",
+            &HashSet::new(),
+            None,
+        );
+        let worker = rows.iter().find(|row| row.label == "Interface").unwrap();
+        assert!(worker.meta.contains("Worker"));
+        assert!(worker.meta.contains("Working"));
+        assert!(worker.meta.contains("Native interface"));
+        assert!(!worker.meta.contains("Trabalhando"));
     }
 
     #[test]
@@ -932,7 +1143,7 @@ mod tests {
             1
         );
         assert_eq!(rows.iter().filter(|row| row.label == "Worker").count(), 1);
-        let reserve = rows.iter().position(|row| row.label == "Reserve").unwrap();
+        let reserve = rows.iter().position(|row| row.label == "Reserva").unwrap();
         assert_eq!(rows[reserve + 1].label, "Reserved");
         assert_eq!(rows[reserve + 2].label, "Nested reserved");
     }
@@ -992,7 +1203,7 @@ mod tests {
         assert_eq!(rows.iter().filter(|row| row.label == "Primary").count(), 1);
         let duplicate = rows.iter().find(|row| row.label == "Duplicate").unwrap();
         assert!(duplicate.invalid);
-        assert!(duplicate.meta.contains("duplicate pane binding"));
+        assert!(duplicate.meta.contains("vínculo de pane duplicado"));
         assert_eq!(duplicate.pane_id.as_deref(), Some("w1:p1"));
         assert_eq!(duplicate.attention, 0);
         assert_eq!(
@@ -1035,7 +1246,7 @@ mod tests {
         let other = rows(&snapshot, &config, "ssh:two", &HashSet::new(), None);
         assert!(!other.iter().any(|row| row.label == "Remote"));
         assert!(other.iter().any(
-            |row| row.meta.contains("unregistered") && row.pane_id.as_deref() == Some("w1:p1")
+            |row| row.meta.contains("Sem cadastro") && row.pane_id.as_deref() == Some("w1:p1")
         ));
         assert!(rows(&snapshot, &config, "ssh:one", &HashSet::new(), None)
             .iter()

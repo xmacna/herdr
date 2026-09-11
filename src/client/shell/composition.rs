@@ -99,6 +99,7 @@ impl ClientShellState {
             &self.config.palette,
             self.config.organization.enabled,
             self.navigate_organization_key.is_some(),
+            self.config.organization_locale,
         );
         FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
     }
@@ -264,6 +265,7 @@ impl ClientShellState {
                 &self.config.palette,
                 self.config.organization.enabled,
                 self.navigate_organization_key.is_some(),
+                self.config.organization_locale,
             )
         };
         if mode_bar == Some(layout.tab_bar) {

@@ -82,6 +82,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) organization: crate::config::OrganizationConfig,
+    pub(super) organization_locale: crate::config::OrganizationLocale,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,
@@ -909,6 +910,7 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_section_split: f32,
     pub(super) sidebar_section_split_manual: bool,
     pub(super) agent_panel_sort_manual: bool,
+    pub(super) organization_locale_manual: bool,
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
@@ -975,6 +977,9 @@ pub(crate) struct ClientShellState {
     pub(super) local_config_diagnostic: Option<String>,
     pub(super) config_diagnostic: Option<String>,
     pub(super) endpoint_error: Option<String>,
+    pub(super) organization_registry_fingerprint: Option<(u64, u128)>,
+    pub(super) organization_registry_observed_fingerprint: Option<(u64, u128)>,
+    pub(super) organization_registry_last_check: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
 }
 
@@ -1036,7 +1041,13 @@ impl ClientShellState {
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
-        Self {
+        let organization_locale = preferences
+            .organization_locale
+            .as_deref()
+            .map(crate::config::OrganizationLocale::parse)
+            .unwrap_or_else(|| config.organization.locale());
+        config.organization_locale = organization_locale;
+        let mut state = Self {
             config,
             snapshot: None,
             pane_surface: None,
@@ -1054,6 +1065,7 @@ impl ClientShellState {
             sidebar_section_split,
             sidebar_section_split_manual: preferences.sidebar_section_split.is_some(),
             agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
+            organization_locale_manual: preferences.organization_locale.is_some(),
             last_sidebar_divider_click: None,
             chrome_drag: None,
             workspace_press: None,
@@ -1120,8 +1132,13 @@ impl ClientShellState {
             config_diagnostic: local_config_diagnostic.clone(),
             local_config_diagnostic,
             endpoint_error: None,
+            organization_registry_fingerprint: None,
+            organization_registry_observed_fingerprint: None,
+            organization_registry_last_check: None,
             dismissed_product_announcement: None,
-        }
+        };
+        state.reload_organization_registry();
+        state
     }
 
     pub(super) fn resume_mobile_switcher_if_ready(&mut self) -> bool {
