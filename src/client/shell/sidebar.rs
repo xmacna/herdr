@@ -426,6 +426,8 @@ pub(crate) fn render_sidebar(
         snapshot,
         config,
         state.agent_scroll,
+        state.organization_collapsed,
+        state.selected_organization_key,
         hits,
     );
 

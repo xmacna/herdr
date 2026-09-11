@@ -14,6 +14,92 @@ fn remote_profile() -> SavedSshEndpoint {
     }
 }
 
+#[test]
+fn collapsed_organization_sidebar_skips_non_pane_rows_before_height_limit() {
+    let mut config = Config::default();
+    config.ui.organization.enabled = true;
+    config.ui.organization.agents = vec![
+        crate::config::OrganizationAgentConfig {
+            id: "manager".into(),
+            label: "Manager without pane".into(),
+            ..Default::default()
+        },
+        crate::config::OrganizationAgentConfig {
+            id: "worker".into(),
+            label: "Focusable worker".into(),
+            parent_id: Some("manager".into()),
+            pane_id: Some("pane_1".into()),
+            ..Default::default()
+        },
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let profile = remote_profile();
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+    let mut projected = snapshot();
+    projected.agents = vec![agent("Focusable worker", AgentStatus::Working, 1)];
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.sidebar_collapsed = true;
+
+    state.compose(72, 18).expect("collapsed organization shell");
+    assert!(state
+        .hits
+        .endpoint_agents
+        .iter()
+        .any(|(_, _, pane_id)| pane_id == "pane_1"));
+    assert!(state
+        .hits
+        .endpoint_agents
+        .iter()
+        .all(|(_, _, pane_id)| !pane_id.is_empty()));
+}
+
+#[test]
+fn organization_keyboard_reaches_remote_duplicate_pane_by_endpoint_scope() {
+    let profile = remote_profile();
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    let mut config = Config::default();
+    config.ui.organization.enabled = true;
+    config.ui.organization.agents = vec![
+        crate::config::OrganizationAgentConfig {
+            id: "local-agent".into(),
+            label: "Local pane".into(),
+            pane_id: Some("pane_1".into()),
+            ..Default::default()
+        },
+        crate::config::OrganizationAgentConfig {
+            id: "remote-agent".into(),
+            label: "Remote pane".into(),
+            pane_id: Some("pane_1".into()),
+            endpoint_id: Some(remote.storage_key()),
+            ..Default::default()
+        },
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+    let mut local = snapshot();
+    local.agents = vec![agent("Local pane", AgentStatus::Working, 1)];
+    state.set_snapshot(Box::new(local));
+    let mut remote_snapshot = snapshot();
+    remote_snapshot.boot_id = "remote-boot".into();
+    remote_snapshot.agents = vec![agent("Remote pane", AgentStatus::Working, 1)];
+    state.set_endpoint_snapshot(&remote, Box::new(remote_snapshot));
+
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    state.handle_input_bytes(b"\x1b[B");
+    state.handle_input_bytes(b"\x1b[B");
+    let focus = state.handle_input_bytes(b"\r");
+    assert!(matches!(
+        focus.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint { endpoint_id, target: Some(ClientEndpointFocusTarget::Pane(pane_id)) }]
+            if endpoint_id == &remote && pane_id == "pane_1"
+    ));
+}
+
 fn agent(
     name: &str,
     status: crate::api::schema::AgentStatus,

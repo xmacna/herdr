@@ -80,6 +80,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
+    pub(super) organization: crate::config::OrganizationConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,
@@ -156,6 +157,7 @@ pub(super) struct ShellHitMap {
     pub(super) agent_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) agent_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
+    pub(super) organization_toggles: Vec<(Rect, String)>,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
     pub(super) sidebar_toggle: Rect,
@@ -911,6 +913,7 @@ pub(crate) struct ClientShellState {
     pub(super) workspace_press: Option<ClientWorkspacePress>,
     pub(super) tab_press: Option<ClientTabPress>,
     pub(super) collapsed_groups: HashSet<String>,
+    pub(super) organization_collapsed: HashSet<String>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) tab_scroll: usize,
@@ -927,6 +930,7 @@ pub(crate) struct ClientShellState {
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
     pub(super) mode: ClientShellMode,
     pub(super) navigate_workspace_id: Option<String>,
+    pub(super) navigate_organization_key: Option<String>,
     pub(super) overlay: Option<ClientShellOverlay>,
     pub(super) previous_pane_id: Option<String>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
@@ -1054,6 +1058,7 @@ impl ClientShellState {
             workspace_press: None,
             tab_press: None,
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
+            organization_collapsed: preferences.organization_collapsed.into_iter().collect(),
             workspace_scroll: 0,
             agent_scroll: 0,
             tab_scroll: 0,
@@ -1070,6 +1075,7 @@ impl ClientShellState {
             collapsed_endpoints: HashSet::new(),
             mode: ClientShellMode::Terminal,
             navigate_workspace_id: None,
+            navigate_organization_key: None,
             overlay,
             previous_pane_id: None,
             pane_mouse_gesture: None,
@@ -1200,6 +1206,7 @@ impl ClientShellState {
         self.tab_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;
+        self.navigate_organization_key = None;
         self.tab_scroll = 0;
         self.mobile_switcher_scroll = 0;
         self.reveal_focused_workspace = true;
@@ -1507,6 +1514,25 @@ impl ClientShellState {
             }
         }
         self.snapshot = Some(snapshot);
+        if self.mode == ClientShellMode::Navigate
+            && self.config.organization.enabled
+            && self
+                .navigate_organization_key
+                .as_ref()
+                .is_some_and(|selected| {
+                    !self.organization_navigation_rows().iter().any(|(_, row)| {
+                        row.organization
+                            .as_ref()
+                            .is_some_and(|row| &row.key == selected)
+                    })
+                })
+        {
+            self.navigate_organization_key = self
+                .organization_navigation_rows()
+                .first()
+                .and_then(|(_, row)| row.organization.as_ref())
+                .map(|row| row.key.clone());
+        }
         let pending_surface = self.pending_pane_surface.take();
         if let Some(surface) = pending_surface {
             let matching = self.snapshot.as_ref().is_some_and(|snapshot| {

@@ -47,6 +47,7 @@ impl ClientShellState {
                 collapsed_groups: &self.collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
+                organization_collapsed: &self.organization_collapsed,
                 tab_scroll: &mut self.tab_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
                 reveal_focused_tab: &mut self.reveal_focused_tab,
@@ -54,6 +55,7 @@ impl ClientShellState {
                 sidebar_section_split: self.sidebar_section_split,
                 tab_drag_insert_index: None,
                 selected_workspace_id: self.navigate_workspace_id.as_deref(),
+                selected_organization_key: self.navigate_organization_key.as_deref(),
                 dragged_workspace_id: None,
                 workspace_drop_indicator_row: None,
             },
@@ -94,6 +96,8 @@ impl ClientShellState {
             false,
             &self.config.keybinds,
             &self.config.palette,
+            self.config.organization.enabled,
+            self.navigate_organization_key.is_some(),
         );
         FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
     }
@@ -145,6 +149,7 @@ impl ClientShellState {
                 collapsed_groups: &self.collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
+                organization_collapsed: &self.organization_collapsed,
                 tab_scroll: &mut self.tab_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
                 reveal_focused_tab: &mut self.reveal_focused_tab,
@@ -153,6 +158,9 @@ impl ClientShellState {
                 tab_drag_insert_index,
                 selected_workspace_id: (self.mode == ClientShellMode::Navigate)
                     .then_some(self.navigate_workspace_id.as_deref())
+                    .flatten(),
+                selected_organization_key: (self.mode == ClientShellMode::Navigate)
+                    .then_some(self.navigate_organization_key.as_deref())
                     .flatten(),
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
@@ -253,6 +261,8 @@ impl ClientShellState {
                 snapshot.update_available.is_some(),
                 &self.config.keybinds,
                 &self.config.palette,
+                self.config.organization.enabled,
+                self.navigate_organization_key.is_some(),
             )
         };
         if mode_bar == Some(layout.tab_bar) {

@@ -866,6 +866,500 @@ fn named_workspace_overlay_targets_projected_source_workspace() {
     ));
 }
 
+fn organization_demo_agent(pane_id: &str, name: &str, status: AgentStatus) -> ClientShellAgent {
+    ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some(name.into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: status,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: pane_id == "pane_1",
+    }
+}
+
+fn organization_demo_frame_text(frame: &FrameData) -> String {
+    frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn organization_navigation_state(worker_count: usize) -> ClientShellState {
+    let mut projected = snapshot();
+    projected.agents = (0..worker_count.saturating_add(1))
+        .map(|index| {
+            organization_demo_agent(
+                &format!("pane_{}", index + 1),
+                if index == 0 { "Manager" } else { "Worker" },
+                AgentStatus::Working,
+            )
+        })
+        .collect();
+    let mut config = Config::default();
+    config.ui.organization.enabled = true;
+    config.ui.organization.agents = std::iter::once(crate::config::OrganizationAgentConfig {
+        id: "manager".into(),
+        label: "Manager".into(),
+        pane_id: Some("pane_1".into()),
+        ..Default::default()
+    })
+    .chain(
+        (0..worker_count).map(|index| crate::config::OrganizationAgentConfig {
+            id: format!("worker-{index}"),
+            label: format!("Worker {index}"),
+            pane_id: Some(format!("pane_{}", index + 2)),
+            parent_id: Some("manager".into()),
+            ..Default::default()
+        }),
+    )
+    .collect();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state
+}
+
+#[test]
+fn organization_disabled_keeps_the_normal_agent_sidebar_path() {
+    let mut projected = snapshot();
+    projected.agents = vec![organization_demo_agent(
+        "pane_normal",
+        "Normal agent",
+        AgentStatus::Working,
+    )];
+    let mut config = Config::default();
+    config.ui.organization.enabled = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("normal agent shell");
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane_id)| pane_id == "pane_normal"));
+    assert!(state.hits.organization_toggles.is_empty());
+    assert!(organization_demo_frame_text(&frame).contains("Normal agent"));
+}
+
+#[test]
+fn organization_navigation_reveals_worker_and_focuses_the_selected_pane() {
+    let mut state = organization_navigation_state(12);
+    assert!(state.handle_input_bytes(&[0x02]).actions.is_empty());
+    assert!(state.handle_input_bytes(b"w").repaint);
+    for _ in 0..12 {
+        state.handle_input_bytes(b"\x1b[B");
+        state.compose(106, 10).expect("short organization shell");
+    }
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane_id)| pane_id == "pane_13"));
+    assert!(state.agent_scroll > 0);
+    let focus = state.handle_input_bytes(b"\r");
+    assert!(matches!(
+        focus.actions.as_slice(),
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_13")
+    ));
+}
+
+#[test]
+fn organization_navigation_switches_to_projects_and_handles_removed_selection() {
+    let mut state = organization_navigation_state(1);
+    let mut projected = state.snapshot.as_deref().cloned().unwrap();
+    for index in 2..=10 {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("workspace-{index}");
+        workspace.focused = false;
+        projected.workspaces.push(workspace);
+    }
+    state.set_snapshot(Box::new(projected));
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    state.handle_input_bytes(b"\t");
+    for _ in 0..9 {
+        state.handle_input_bytes(b"\x1b[B");
+    }
+    assert_eq!(state.navigate_workspace_id.as_deref(), Some("ws_10"));
+    let projects_frame = state.compose(106, 30).expect("projects navigation shell");
+    let projects_text = organization_demo_frame_text(&projects_frame);
+    assert!(
+        projects_text.contains("tab tree"),
+        "projects footer: {projects_text}"
+    );
+    assert!(
+        !projects_text.contains("tab pane"),
+        "projects footer: {projects_text}"
+    );
+
+    state.navigate_organization_key = Some("organization:local:agent:worker-0".into());
+    state.config.organization.agents.clear();
+    let mut refreshed = state.snapshot.as_deref().cloned().unwrap();
+    refreshed.revision += 1;
+    state.set_snapshot(Box::new(refreshed));
+    assert_eq!(
+        state.navigate_organization_key.as_deref(),
+        Some("organization:local:group:root")
+    );
+}
+
+#[test]
+fn organization_arrow_click_collapses_without_focus_and_leaf_click_focuses() {
+    let mut state = organization_navigation_state(1);
+    state.compose(106, 30).expect("organization shell");
+    let (_, manager_key) = state.hits.organization_toggles[0].clone();
+    let toggle = state.hits.organization_toggles[0].0;
+    let collapse =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: toggle.x,
+            row: toggle.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(collapse.actions.is_empty());
+    assert!(state.organization_collapsed.contains(&manager_key));
+
+    state.compose(106, 30).expect("expanded organization shell");
+    let toggle = state.hits.organization_toggles[0].0;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: toggle.x,
+        row: toggle.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.compose(106, 30).expect("reopened organization shell");
+    let leaf = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_2")
+        .map(|(rect, _)| *rect)
+        .expect("worker hit");
+    let focus = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: leaf.x,
+        row: leaf.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(focus.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_2")
+    )));
+}
+
+#[test]
+fn organization_collapse_preference_restores_with_new_state_and_snapshot() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-organization-collapse-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let mut state = organization_navigation_state(1);
+    state.config.preferences_path = Some(path.clone());
+    state.compose(106, 30).expect("organization shell");
+    let toggle = state.hits.organization_toggles[0].0;
+    let key = state.hits.organization_toggles[0].1.clone();
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: toggle.x,
+        row: toggle.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.organization_collapsed.contains(&key));
+
+    let config = state.config.organization.clone();
+    let mut reloaded_config = Config::default();
+    reloaded_config.ui.organization = config;
+    let reloaded_shell_config =
+        ClientShellConfig::from_config(&reloaded_config).with_preferences_path(path.clone());
+    let mut reloaded = ClientShellState::new(reloaded_shell_config);
+    reloaded.set_snapshot(Box::new(state.snapshot.as_deref().cloned().unwrap()));
+    reloaded.set_pane_surface(surface());
+    reloaded
+        .compose(106, 30)
+        .expect("reloaded organization shell");
+    assert!(reloaded.organization_collapsed.contains(&key));
+    assert!(!reloaded
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane_id)| pane_id == "pane_2"));
+    std::fs::remove_file(path).expect("remove organization preferences");
+}
+
+#[test]
+fn organization_renderer_captures_wide_and_narrow_native_shells() {
+    let mut projected = snapshot();
+    projected.panes[0].focused = false;
+    let mut terminal_without_agent = projected.panes[0].clone();
+    terminal_without_agent.pane_id = "pane_6".into();
+    terminal_without_agent.focused = false;
+    projected.panes.push(terminal_without_agent);
+    for pane_id in [
+        "pane_argos",
+        "pane_2",
+        "pane_3",
+        "pane_4",
+        "pane_5",
+        "orphan-pane",
+    ] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.focused = pane_id == "pane_argos";
+        projected.panes.push(pane);
+    }
+    projected.agents = vec![
+        organization_demo_agent("pane_argos", "Argos", AgentStatus::Working),
+        organization_demo_agent("pane_1", "Gerente Produto", AgentStatus::Working),
+        organization_demo_agent("pane_2", "Luna Interface", AgentStatus::Blocked),
+        organization_demo_agent("pane_3", "Luna Build", AgentStatus::Done),
+        organization_demo_agent("pane_4", "Gerente Conteudo", AgentStatus::Idle),
+        organization_demo_agent("pane_5", "Luna Revisao", AgentStatus::Working),
+        organization_demo_agent("orphan-pane", "Orphan runtime", AgentStatus::Blocked),
+    ];
+    projected.focused_pane_id = Some("pane_argos".into());
+
+    let mut config = Config::default();
+    config.ui.sidebar_width = 42;
+    config.ui.organization = crate::config::OrganizationConfig {
+        enabled: true,
+        root: "Organizacao".into(),
+        reserve_label: "Reserva".into(),
+        orphan_label: "Sem cadastro".into(),
+        pending_label: "Cadastro pendente".into(),
+        agents: vec![
+            crate::config::OrganizationAgentConfig {
+                id: "argos".into(),
+                label: "Argos".into(),
+                pane_id: Some("pane_argos".into()),
+                role: "coordenador".into(),
+                task: Some("Coordenar gerentes".into()),
+                model: Some("gpt-6-astra".into()),
+                ..Default::default()
+            },
+            crate::config::OrganizationAgentConfig {
+                id: "manager-product".into(),
+                label: "Gerente Produto".into(),
+                pane_id: Some("pane_1".into()),
+                parent_id: Some("argos".into()),
+                role: "gerente".into(),
+                area: Some("Produto".into()),
+                task: Some("Revisar entrega principal".into()),
+                model: Some("gpt-6-astra".into()),
+                ..Default::default()
+            },
+            crate::config::OrganizationAgentConfig {
+                id: "worker-ui".into(),
+                label: "Luna Interface".into(),
+                pane_id: Some("pane_2".into()),
+                parent_id: Some("manager-product".into()),
+                role: "worker".into(),
+                task: Some("Arvore e navegacao com tarefa longa para validar truncamento".into()),
+                model: Some("gpt-5.6-luna".into()),
+                ..Default::default()
+            },
+            crate::config::OrganizationAgentConfig {
+                id: "worker-build".into(),
+                label: "Luna Build".into(),
+                pane_id: Some("pane_3".into()),
+                parent_id: Some("manager-product".into()),
+                role: "worker".into(),
+                task: Some("Validar Windows".into()),
+                model: Some("gpt-5.6-luna".into()),
+                ..Default::default()
+            },
+            crate::config::OrganizationAgentConfig {
+                id: "manager-content".into(),
+                label: "Gerente Conteudo".into(),
+                pane_id: Some("pane_4".into()),
+                parent_id: Some("argos".into()),
+                role: "gerente".into(),
+                area: Some("Conteudo".into()),
+                task: Some("Organizar revisao".into()),
+                model: Some("gpt-5.6-luna".into()),
+                ..Default::default()
+            },
+            crate::config::OrganizationAgentConfig {
+                id: "worker-review".into(),
+                label: "Luna Revisao".into(),
+                pane_id: Some("pane_5".into()),
+                parent_id: Some("manager-content".into()),
+                role: "worker".into(),
+                task: Some("Revisar pacote".into()),
+                model: Some("gpt-5.6-luna".into()),
+                ..Default::default()
+            },
+            crate::config::OrganizationAgentConfig {
+                id: "worker-reserve".into(),
+                label: "Luna Reserva".into(),
+                role: "worker".into(),
+                reserved: true,
+                ..Default::default()
+            },
+        ],
+    };
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    // Apply the initial snapshot first. EndpointAgentPresentation intentionally
+    // treats the first Done observation as already acknowledged; the following
+    // sequence increment is the live completion that the capture must display.
+    let mut updated = state
+        .snapshot
+        .as_deref()
+        .cloned()
+        .expect("initial snapshot");
+    updated.revision += 1;
+    let build = updated
+        .agents
+        .iter_mut()
+        .find(|agent| agent.pane_id == "pane_3")
+        .expect("build agent");
+    build.agent_status = AgentStatus::Done;
+    build.state_change_seq += 1;
+    state.set_snapshot(Box::new(updated));
+    let mut updated_surface = surface();
+    updated_surface.projection_revision = 2;
+    updated_surface.surface_revision = 2;
+    state.set_pane_surface(updated_surface);
+    // The wide fixture models a user dragging the divider down to expose the
+    // complete organization tree while retaining the upstream default width.
+    state.sidebar_section_split = 0.18;
+
+    let wide_frame = state.compose(106, 50).expect("wide shell");
+    let wide_json = serde_json::to_vec(&wide_frame).expect("wide frame json");
+    let wide = organization_demo_frame_text(&wide_frame);
+    let interface_start = wide.find("Luna Interface").expect("interface row");
+    let interface_block = wide[interface_start..]
+        .lines()
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        interface_block.contains("gpt-5.6-luna"),
+        "interface block: {interface_block}"
+    );
+    assert!(
+        interface_block.contains("! 1"),
+        "interface block: {interface_block}"
+    );
+    assert!(wide.contains("Luna Interface"), "wide frame: {wide}");
+    assert!(wide.contains("Luna Build"), "wide frame: {wide}");
+    assert!(wide.contains("done"), "wide frame: {wide}");
+    assert!(wide.contains("Organizacao"), "wide frame: {wide}");
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane_id)| pane_id == "pane_argos"));
+    assert!(wide.contains("Sem cadastro"), "wide frame: {wide}");
+    assert!(wide.contains("unbound · no runtime"), "wide frame: {wide}");
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane_id)| pane_id == "pane_2"));
+
+    state.sidebar_width = 26;
+    // Narrow capture intentionally keeps a partial viewport; selection and
+    // focus must still reveal the requested row without widening the default.
+    state.sidebar_section_split = 0.5;
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    state.navigate_organization_key = Some("organization:local:agent:worker-ui".into());
+    let narrow_frame = state.compose(72, 18).expect("narrow shell");
+    let narrow_json = serde_json::to_vec(&narrow_frame).expect("narrow frame json");
+    let narrow = organization_demo_frame_text(&narrow_frame);
+    assert!(narrow.contains("Luna Interface"), "narrow frame: {narrow}");
+    assert!(narrow.contains("↑↓tree"), "narrow footer: {narrow}");
+    assert!(narrow.contains("Tab>projects"), "narrow footer: {narrow}");
+    assert!(narrow.contains("Enter>focus"), "narrow footer: {narrow}");
+    assert!(!narrow.contains("tab pane"), "narrow footer: {narrow}");
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane_id)| pane_id == "pane_2"));
+
+    if let Some(capture_dir) = std::env::var_os("HERDR_ORG_CAPTURE_DIR") {
+        let capture_dir = std::path::PathBuf::from(capture_dir);
+        std::fs::create_dir_all(&capture_dir).expect("capture directory");
+        std::fs::write(capture_dir.join("organization-wide.txt"), wide).expect("wide capture");
+        std::fs::write(capture_dir.join("organization-wide.json"), wide_json)
+            .expect("wide frame capture");
+        std::fs::write(capture_dir.join("organization-narrow.txt"), narrow)
+            .expect("narrow capture");
+        std::fs::write(capture_dir.join("organization-narrow.json"), narrow_json)
+            .expect("narrow frame capture");
+    }
+}
+
+#[test]
+fn organization_compose_scale_profile_is_sequential_and_non_gating() {
+    for agent_count in [1usize, 15] {
+        let mut projected = snapshot();
+        projected.agents = (0..agent_count)
+            .map(|index| {
+                organization_demo_agent(
+                    &format!("profile-pane-{index}"),
+                    &format!("Profile agent {index}"),
+                    if index % 3 == 0 {
+                        AgentStatus::Blocked
+                    } else {
+                        AgentStatus::Working
+                    },
+                )
+            })
+            .collect();
+        let mut config = Config::default();
+        config.ui.organization.enabled = true;
+        config.ui.organization.agents = (0..agent_count)
+            .map(|index| crate::config::OrganizationAgentConfig {
+                id: format!("profile-{index}"),
+                label: format!("Profile agent {index}"),
+                pane_id: Some(format!("profile-pane-{index}")),
+                role: "worker".into(),
+                ..Default::default()
+            })
+            .collect();
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            std::hint::black_box(state.compose(106, 30).expect("profile shell"));
+        }
+        eprintln!(
+            "organization compose profile: agents={agent_count} iterations=3 elapsed_ms={}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
 #[test]
 fn navigate_mode_selects_workspace_locally_then_focuses_by_stable_id() {
     let mut snapshot = snapshot();

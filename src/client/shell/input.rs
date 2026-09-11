@@ -77,6 +77,31 @@ fn push_host_theme_update(
 }
 
 impl ClientShellState {
+    pub(super) fn organization_navigation_rows(
+        &self,
+    ) -> Vec<(ClientEndpointId, super::agent_sidebar::AgentRow)> {
+        self.endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                let snapshot = endpoint.snapshot.as_deref()?;
+                let scope = endpoint.endpoint_id.storage_key();
+                Some(
+                    super::agent_sidebar::organization_rows(
+                        snapshot,
+                        &self.config,
+                        &scope,
+                        &self.organization_collapsed,
+                        self.navigate_organization_key.as_deref(),
+                    )
+                    .into_iter()
+                    .map(|row| (endpoint.endpoint_id.clone(), row))
+                    .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .collect()
+    }
+
     pub(crate) fn host_keyboard_report_all_requested(&self) -> bool {
         matches!(
             self.mode,
@@ -626,6 +651,40 @@ impl ClientShellState {
         {
             self.mode = self.copy_or_terminal_mode();
             self.navigate_workspace_id = None;
+            self.navigate_organization_key = None;
+            outcome.repaint = true;
+            return;
+        }
+
+        if self.config.organization.enabled
+            && self.navigate_organization_key.is_some()
+            && self.route_organization_navigate_key(key, outcome)
+        {
+            return;
+        }
+
+        let (section_code, section_modifiers) =
+            crate::config::normalize_key_combo((key.code, key.modifiers));
+        if self.config.organization.enabled
+            && self.navigate_organization_key.is_none()
+            && section_modifiers.is_empty()
+            && matches!(section_code, KeyCode::Tab | KeyCode::BackTab)
+        {
+            let rows = self.organization_navigation_rows();
+            self.navigate_workspace_id = None;
+            self.navigate_organization_key = rows
+                .iter()
+                .find(|(endpoint_id, row)| {
+                    endpoint_id == &self.active_endpoint_id
+                        && row.pane_id.as_str().eq(self
+                            .snapshot
+                            .as_deref()
+                            .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
+                            .unwrap_or(""))
+                })
+                .or_else(|| rows.first())
+                .and_then(|(_, row)| row.organization.as_ref())
+                .map(|row| row.key.clone());
             outcome.repaint = true;
             return;
         }
@@ -790,6 +849,142 @@ impl ClientShellState {
         });
         if let Some(binding) = binding {
             self.record_navigate_binding(binding, false, outcome);
+        }
+    }
+
+    fn route_organization_navigate_key(
+        &mut self,
+        key: &crate::input::TerminalKey,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+        if !modifiers.is_empty() {
+            return false;
+        }
+        if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
+            self.navigate_organization_key = None;
+            self.navigate_workspace_id = self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.focused_workspace_id.clone());
+            outcome.repaint = true;
+            return true;
+        }
+        let delta = if matches!(code, KeyCode::Up)
+            || self
+                .config
+                .keybinds
+                .keybinds
+                .navigate
+                .workspace_up
+                .matches_direct_key(key)
+        {
+            Some(-1)
+        } else if matches!(code, KeyCode::Down)
+            || self
+                .config
+                .keybinds
+                .keybinds
+                .navigate
+                .workspace_down
+                .matches_direct_key(key)
+        {
+            Some(1)
+        } else {
+            None
+        };
+        let rows = self.organization_navigation_rows();
+        if rows.is_empty() {
+            return true;
+        }
+        let current = self
+            .navigate_organization_key
+            .as_deref()
+            .and_then(|selected| {
+                rows.iter().position(|(_, row)| {
+                    row.organization
+                        .as_ref()
+                        .is_some_and(|row| row.key == selected)
+                })
+            })
+            .unwrap_or(0);
+        if let Some(delta) = delta {
+            let next = (current as isize + delta).rem_euclid(rows.len() as isize) as usize;
+            self.navigate_organization_key = rows[next]
+                .1
+                .organization
+                .as_ref()
+                .map(|row| row.key.clone());
+            outcome.repaint = true;
+            return true;
+        }
+        match code {
+            KeyCode::Left => {
+                let selected = rows[current].1.organization.as_ref();
+                if let Some(selected) = selected {
+                    if selected.expandable && !selected.collapsed {
+                        self.organization_collapsed.insert(selected.key.clone());
+                    } else if let Some(parent) = selected.parent_key.as_ref() {
+                        self.navigate_organization_key = Some(parent.clone());
+                    }
+                    self.persist_chrome_preferences(outcome);
+                    outcome.repaint = true;
+                }
+                true
+            }
+            KeyCode::Right => {
+                let selected = rows[current].1.organization.as_ref();
+                if let Some(selected) = selected {
+                    if selected.expandable && selected.collapsed {
+                        self.organization_collapsed.remove(&selected.key);
+                        self.persist_chrome_preferences(outcome);
+                    } else if selected.expandable {
+                        self.navigate_organization_key = rows
+                            .iter()
+                            .find(|(_, row)| {
+                                row.organization
+                                    .as_ref()
+                                    .and_then(|row| row.parent_key.as_ref())
+                                    == Some(&selected.key)
+                            })
+                            .and_then(|(_, row)| row.organization.as_ref())
+                            .map(|row| row.key.clone());
+                    }
+                    outcome.repaint = true;
+                }
+                true
+            }
+            KeyCode::Enter => {
+                let Some(selected) = rows[current].1.organization.as_ref() else {
+                    return true;
+                };
+                if let Some(pane_id) = selected.pane_id.clone() {
+                    let endpoint_id = rows[current].0.clone();
+                    self.mode = ClientShellMode::Terminal;
+                    self.navigate_organization_key = None;
+                    if endpoint_id == self.active_endpoint_id {
+                        self.push_endpoint_method(
+                            crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                                pane_id,
+                            }),
+                            outcome,
+                        );
+                    } else {
+                        outcome.actions.push(ClientShellAction::ActivateEndpoint {
+                            endpoint_id,
+                            target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
+                        });
+                    }
+                } else if selected.expandable {
+                    if !self.organization_collapsed.remove(&selected.key) {
+                        self.organization_collapsed.insert(selected.key.clone());
+                    }
+                    self.persist_chrome_preferences(outcome);
+                }
+                outcome.repaint = true;
+                true
+            }
+            _ => false,
         }
     }
 

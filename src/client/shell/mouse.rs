@@ -1913,6 +1913,19 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if let Some((_, key)) = self
+                    .hits
+                    .organization_toggles
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                {
+                    if !self.organization_collapsed.remove(key) {
+                        self.organization_collapsed.insert(key.clone());
+                    }
+                    self.persist_chrome_preferences(outcome);
+                    outcome.repaint = true;
+                    return;
+                }
                 if self.handle_endpoint_machine_click(point, outcome) {
                     return;
                 }

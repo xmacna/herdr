@@ -37,6 +37,8 @@ pub(super) fn render_mode_bar(
     update_available: bool,
     keybinds: &LiveKeybindConfig,
     palette: &Palette,
+    organization_enabled: bool,
+    organization_selected: bool,
 ) -> Option<Rect> {
     if (mode == ClientShellMode::Terminal && endpoint_error.is_none()) || pane_area.is_empty() {
         return None;
@@ -98,16 +100,54 @@ pub(super) fn render_mode_bar(
                 ]);
             }
             ClientShellMode::Navigate => {
-                segments.extend([
-                    (" NAVIGATE ".to_owned(), mode_style),
-                    (" esc back  ".to_owned(), base),
-                    ("↑/↓".to_owned(), key),
-                    (" workspace  ".to_owned(), base),
-                    ("tab".to_owned(), key),
-                    (" pane  ".to_owned(), base),
-                    (prefix_rhs(&keybinds.keybinds.help), key),
-                    (" keybinds".to_owned(), base),
-                ]);
+                if organization_selected {
+                    if pane_area.width < 60 {
+                        segments.push((" NAV ".to_owned(), mode_style));
+                        segments.extend([
+                            ("\u{2191}\u{2193}tree ".to_owned(), key),
+                            ("\u{2190}\u{2192}fold ".to_owned(), key),
+                            ("Tab>projects ".to_owned(), base),
+                            ("Enter>focus".to_owned(), key),
+                        ]);
+                    } else {
+                        segments.extend([
+                            (" NAVIGATE ".to_owned(), mode_style),
+                            (" esc ".to_owned(), base),
+                            ("\u{2191}\u{2193}".to_owned(), key),
+                            (" tree ".to_owned(), base),
+                            ("\u{2190}\u{2192}".to_owned(), key),
+                            (" fold ".to_owned(), base),
+                            ("tab".to_owned(), key),
+                            (" projects ".to_owned(), base),
+                            ("enter".to_owned(), key),
+                            (" focus".to_owned(), base),
+                        ]);
+                    }
+                } else if organization_enabled {
+                    segments.extend([
+                        (" NAVIGATE ".to_owned(), mode_style),
+                        (" esc back  ".to_owned(), base),
+                        ("\u{2191}/\u{2193}".to_owned(), key),
+                        (" workspace  ".to_owned(), base),
+                        ("tab".to_owned(), key),
+                        (" tree  ".to_owned(), base),
+                        ("enter".to_owned(), key),
+                        (" focus  ".to_owned(), base),
+                        (prefix_rhs(&keybinds.keybinds.help), key),
+                        (" keybinds".to_owned(), base),
+                    ]);
+                } else {
+                    segments.extend([
+                        (" NAVIGATE ".to_owned(), mode_style),
+                        (" esc back  ".to_owned(), base),
+                        ("↑/↓".to_owned(), key),
+                        (" workspace  ".to_owned(), base),
+                        ("tab".to_owned(), key),
+                        (" pane  ".to_owned(), base),
+                        (prefix_rhs(&keybinds.keybinds.help), key),
+                        (" keybinds".to_owned(), base),
+                    ]);
+                }
             }
             ClientShellMode::Resize => {
                 segments.extend([
@@ -217,6 +257,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) collapsed_groups: &'a HashSet<String>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
+    pub(super) organization_collapsed: &'a HashSet<String>,
     pub(super) tab_scroll: &'a mut usize,
     pub(super) reveal_focused_workspace: &'a mut bool,
     pub(super) reveal_focused_tab: &'a mut bool,
@@ -224,6 +265,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) sidebar_section_split: f32,
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a str>,
+    pub(super) selected_organization_key: Option<&'a str>,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
 }
@@ -308,6 +350,7 @@ pub(super) fn render_shell(
         hits.workspaces.clear();
         hits.agents.clear();
         hits.endpoint_agents.clear();
+        hits.organization_toggles.clear();
         hits.tab_scroll_left = Rect::default();
         hits.tab_scroll_right = Rect::default();
         hits.new_tab = Rect::default();

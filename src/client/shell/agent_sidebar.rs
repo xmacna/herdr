@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     buffer::Buffer,
@@ -15,6 +15,7 @@ pub(super) struct AgentRow {
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    pub(super) organization: Option<super::organization::OrganizationRow>,
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -55,6 +56,8 @@ pub(super) fn render_agent_panel(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
+    organization_collapsed: &HashSet<String>,
+    selected_organization_key: Option<&str>,
     hits: &mut ShellHitMap,
 ) {
     if !render_agent_panel_header(
@@ -62,12 +65,36 @@ pub(super) fn render_agent_panel(
         area,
         snapshot.agent_view_label.as_deref(),
         config,
+        config.organization.enabled,
         hits,
     ) {
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let rows = if config.organization.enabled {
+        organization_rows(
+            snapshot,
+            config,
+            "local",
+            organization_collapsed,
+            selected_organization_key,
+        )
+    } else {
+        agent_rows(snapshot, config, None)
+    };
+    reveal_selected_organization(
+        area,
+        &rows,
+        config,
+        agent_scroll,
+        selected_organization_key,
+        |row| row.organization.as_ref().map(|row| row.key.as_str()),
+        |row| {
+            row.organization
+                .as_ref()
+                .map_or(row.rows.len(), |row| row.height())
+        },
+    );
     render_agent_list(
         buffer,
         area,
@@ -79,11 +106,56 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
-        |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+        |row| {
+            row.organization
+                .as_ref()
+                .map_or(row.rows.len(), |row| row.height())
         },
+        |buffer, rect, row, hits| {
+            if !row.pane_id.is_empty() {
+                hits.agents.push((rect, row.pane_id.clone()));
+            }
+            render_agent_row(buffer, rect, row, config, hits);
+        },
+    );
+}
+
+pub(super) fn reveal_selected_organization<T>(
+    area: Rect,
+    rows: &[T],
+    config: &ClientShellConfig,
+    agent_scroll: &mut usize,
+    selected: Option<&str>,
+    key: impl Fn(&T) -> Option<&str>,
+    row_lines: impl Fn(&T) -> usize,
+) {
+    let Some(selected) = selected else {
+        return;
+    };
+    let Some(target) = rows.iter().position(|row| key(row) == Some(selected)) else {
+        return;
+    };
+    let heights = rows
+        .iter()
+        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
+        .collect::<Vec<_>>();
+    let gaps = rows
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            if index + 1 < rows.len() {
+                config.agents.row_gap
+            } else {
+                0
+            }
+        })
+        .collect::<Vec<_>>();
+    *agent_scroll = super::scroll::list_scroll_start_to_reveal(
+        &heights,
+        &gaps,
+        area.height.saturating_sub(3),
+        *agent_scroll,
+        target,
     );
 }
 
@@ -92,6 +164,7 @@ pub(super) fn render_agent_panel_header(
     area: Rect,
     agent_view_label: Option<&str>,
     config: &ClientShellConfig,
+    organization: bool,
     hits: &mut ShellHitMap,
 ) -> bool {
     if area.height == 0 {
@@ -113,14 +186,22 @@ pub(super) fn render_agent_panel_header(
         area.x,
         area.y + 1,
         area.width,
-        " agents",
+        if organization {
+            " organization"
+        } else {
+            " agents"
+        },
         Style::default()
             .fg(config.palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
-    let sort_label = agent_view_label.unwrap_or(match config.agent_panel_sort {
-        crate::config::AgentPanelSortConfig::Spaces => "grouped",
-        crate::config::AgentPanelSortConfig::Priority => "priority",
+    let sort_label = agent_view_label.unwrap_or(if organization {
+        "tree"
+    } else {
+        match config.agent_panel_sort {
+            crate::config::AgentPanelSortConfig::Spaces => "grouped",
+            crate::config::AgentPanelSortConfig::Priority => "priority",
+        }
     });
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
     let sort_rect = Rect::new(
@@ -129,7 +210,8 @@ pub(super) fn render_agent_panel_header(
         sort_width,
         1,
     );
-    hits.agent_sort_toggle = if config.mouse_capture && agent_view_label.is_none() {
+    hits.agent_sort_toggle = if config.mouse_capture && agent_view_label.is_none() && !organization
+    {
         sort_rect
     } else {
         Rect::default()
@@ -306,6 +388,7 @@ pub(super) fn agent_rows(
                 status: agent.agent_status,
                 focused: agent.focused,
                 rows,
+                organization: None,
             })
         })
         .collect()
@@ -316,7 +399,12 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
+    hits: &mut ShellHitMap,
 ) {
+    if let Some(organization) = row.organization.as_ref() {
+        render_organization_row(buffer, rect, organization, row.focused, config, hits);
+        return;
+    }
     let palette = &config.palette;
     let row_style = if row.focused {
         Style::default().bg(palette.active_row_bg)
@@ -371,6 +459,133 @@ pub(super) fn render_agent_row(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
+    }
+}
+
+pub(super) fn organization_rows(
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    endpoint_scope: &str,
+    collapsed: &HashSet<String>,
+    selected: Option<&str>,
+) -> Vec<AgentRow> {
+    super::organization::rows(
+        snapshot,
+        &config.organization,
+        endpoint_scope,
+        collapsed,
+        selected,
+    )
+    .into_iter()
+    .map(|organization| AgentRow {
+        pane_id: organization.pane_id.clone().unwrap_or_default(),
+        status: organization.status,
+        focused: organization
+            .pane_id
+            .as_deref()
+            .is_some_and(|pane_id| snapshot.focused_pane_id.as_deref() == Some(pane_id)),
+        rows: Vec::new(),
+        organization: Some(organization),
+    })
+    .collect()
+}
+
+fn render_organization_row(
+    buffer: &mut Buffer,
+    rect: Rect,
+    row: &super::organization::OrganizationRow,
+    focused: bool,
+    config: &ClientShellConfig,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    let background = if row.selected {
+        palette.selection_bg
+    } else if focused {
+        palette.active_row_bg
+    } else {
+        ratatui::style::Color::Reset
+    };
+    if background != ratatui::style::Color::Reset {
+        buffer.set_style(rect, Style::default().bg(background));
+    }
+    let indent = row.depth.saturating_mul(2);
+    let marker = if row.expandable {
+        if row.collapsed {
+            "▸"
+        } else {
+            "▾"
+        }
+    } else if row.invalid {
+        "?"
+    } else {
+        status_icon(row.status, config.status_indicators)
+    };
+    let marker_x = rect
+        .x
+        .saturating_add(indent)
+        .min(rect.right().saturating_sub(1));
+    if row.expandable {
+        hits.organization_toggles.push((
+            Rect::new(
+                marker_x,
+                rect.y,
+                1.min(rect.width),
+                u16::from(rect.height > 0),
+            ),
+            row.key.clone(),
+        ));
+    }
+    put_text(
+        buffer,
+        marker_x,
+        rect.y,
+        rect.right().saturating_sub(marker_x),
+        marker,
+        Style::default().fg(if row.invalid {
+            palette.yellow
+        } else {
+            status_color(row.status, palette)
+        }),
+    );
+    let label_x = marker_x.saturating_add(2);
+    let label_style = Style::default()
+        .fg(if row.selected || focused {
+            palette.text
+        } else {
+            palette.subtext0
+        })
+        .add_modifier(if row.selected || focused {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
+    put_text(
+        buffer,
+        label_x,
+        rect.y,
+        rect.right().saturating_sub(label_x),
+        &row.label,
+        label_style,
+    );
+    if rect.height > 1 && !row.meta.is_empty() {
+        let meta_x = label_x.saturating_add(1);
+        for (line_index, line) in row.meta.lines().enumerate() {
+            let y = rect.y.saturating_add(1).saturating_add(line_index as u16);
+            if y >= rect.bottom() {
+                break;
+            }
+            put_text(
+                buffer,
+                meta_x,
+                y,
+                rect.right().saturating_sub(meta_x),
+                line,
+                Style::default()
+                    .fg(palette.overlay0)
+                    .add_modifier(Modifier::DIM),
+            );
+        }
     }
 }
 

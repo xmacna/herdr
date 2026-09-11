@@ -129,10 +129,34 @@ impl ClientShellState {
                     self.mobile_switcher_scroll = 0;
                     self.reveal_mobile_workspace = false;
                     self.mode = ClientShellMode::Navigate;
-                    self.navigate_workspace_id = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| snapshot.focused_workspace_id.clone());
+                    self.navigate_workspace_id = None;
+                    self.navigate_organization_key = None;
+                    if self.config.organization.enabled {
+                        let rows = self.organization_navigation_rows();
+                        self.navigate_organization_key = self
+                            .snapshot
+                            .as_deref()
+                            .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
+                            .and_then(|pane_id| {
+                                rows.iter()
+                                    .find(|(endpoint_id, row)| {
+                                        endpoint_id == &self.active_endpoint_id
+                                            && row.pane_id == pane_id
+                                    })
+                                    .and_then(|(_, row)| row.organization.as_ref())
+                                    .map(|row| row.key.clone())
+                            })
+                            .or_else(|| {
+                                rows.first()
+                                    .and_then(|(_, row)| row.organization.as_ref())
+                                    .map(|row| row.key.clone())
+                            });
+                    } else {
+                        self.navigate_workspace_id = self
+                            .snapshot
+                            .as_deref()
+                            .and_then(|snapshot| snapshot.focused_workspace_id.clone());
+                    }
                     outcome.repaint = true;
                     return;
                 }

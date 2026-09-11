@@ -9,8 +9,13 @@ pub(super) fn render_collapsed(
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
-    let rows = agent_rows(endpoints, active_endpoint_id, config);
-    for (index, row) in rows.into_iter().take(area.height as usize).enumerate() {
+    let rows = agent_rows(endpoints, active_endpoint_id, config, &HashSet::new(), None);
+    for (index, row) in rows
+        .into_iter()
+        .filter(|row| !row.agent.pane_id.is_empty())
+        .take(area.height as usize)
+        .enumerate()
+    {
         let rect = Rect::new(area.x, area.y + index as u16, area.width, 1);
         if row.agent.focused {
             buffer.set_style(rect, Style::default().bg(config.palette.active_row_bg));
@@ -37,8 +42,10 @@ pub(super) fn render_collapsed(
                     Modifier::empty()
                 }),
         );
-        hits.endpoint_agents
-            .push((rect, row.endpoint_id, row.agent.pane_id));
+        if !row.agent.pane_id.is_empty() {
+            hits.endpoint_agents
+                .push((rect, row.endpoint_id, row.agent.pane_id));
+        }
     }
 }
 
@@ -50,6 +57,8 @@ pub(super) fn render_expanded(
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
+    organization_collapsed: &HashSet<String>,
+    selected_organization_key: Option<&str>,
     hits: &mut ShellHitMap,
 ) {
     if !super::agent_sidebar::render_agent_panel_header(
@@ -57,11 +66,32 @@ pub(super) fn render_expanded(
         area,
         agent_view_label,
         config,
+        config.organization.enabled,
         hits,
     ) {
         return;
     }
-    let rows = agent_rows(endpoints, active_endpoint_id, config);
+    let rows = agent_rows(
+        endpoints,
+        active_endpoint_id,
+        config,
+        organization_collapsed,
+        selected_organization_key,
+    );
+    super::agent_sidebar::reveal_selected_organization(
+        area,
+        &rows,
+        config,
+        agent_scroll,
+        selected_organization_key,
+        |row| row.agent.organization.as_ref().map(|row| row.key.as_str()),
+        |row| {
+            row.agent
+                .organization
+                .as_ref()
+                .map_or(row.agent.rows.len(), |row| row.height())
+        },
+    );
     super::agent_sidebar::render_agent_list(
         buffer,
         area,
@@ -70,9 +100,14 @@ pub(super) fn render_expanded(
         config,
         agent_scroll,
         hits,
-        |row| row.agent.rows.len(),
+        |row| {
+            row.agent
+                .organization
+                .as_ref()
+                .map_or(row.agent.rows.len(), |row| row.height())
+        },
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, hits);
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -81,8 +116,13 @@ pub(super) fn render_expanded(
                         .add_modifier(Modifier::DIM),
                 );
             }
-            hits.endpoint_agents
-                .push((rect, row.endpoint_id.clone(), row.agent.pane_id.clone()));
+            if !row.agent.pane_id.is_empty() {
+                hits.endpoint_agents.push((
+                    rect,
+                    row.endpoint_id.clone(),
+                    row.agent.pane_id.clone(),
+                ));
+            }
         },
     );
 }
@@ -98,13 +138,53 @@ fn agent_rows(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
+    organization_collapsed: &HashSet<String>,
+    selected_organization_key: Option<&str>,
 ) -> Vec<EndpointAgentRow> {
+    if config.organization.enabled {
+        return endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                let snapshot = endpoint.snapshot.as_deref()?;
+                let endpoint_scope = endpoint.endpoint_id.storage_key();
+                Some(
+                    super::agent_sidebar::organization_rows(
+                        snapshot,
+                        config,
+                        &endpoint_scope,
+                        organization_collapsed,
+                        selected_organization_key,
+                    )
+                    .into_iter()
+                    .map(|agent| EndpointAgentRow {
+                        endpoint_id: endpoint.endpoint_id.clone(),
+                        machine_label: endpoint.label.clone(),
+                        stale: endpoint.status != ClientEndpointStatus::Online,
+                        agent,
+                    })
+                    .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .collect();
+    }
     let mut rendered_rows = endpoints
         .iter()
         .filter_map(|endpoint| {
             endpoint.snapshot.as_deref().map(|snapshot| {
-                super::agent_sidebar::agent_rows(snapshot, config, Some(&endpoint.label))
-                    .into_iter()
+                let endpoint_scope = endpoint.endpoint_id.storage_key();
+                let rows = if config.organization.enabled {
+                    super::agent_sidebar::organization_rows(
+                        snapshot,
+                        config,
+                        &endpoint_scope,
+                        organization_collapsed,
+                        selected_organization_key,
+                    )
+                } else {
+                    super::agent_sidebar::agent_rows(snapshot, config, Some(&endpoint.label))
+                };
+                rows.into_iter()
                     .map(|agent| ((endpoint.endpoint_id.clone(), agent.pane_id.clone()), agent))
                     .collect::<Vec<_>>()
             })

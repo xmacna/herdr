@@ -118,4 +118,18 @@ mod tests {
         assert_eq!(parent_child.max_offset_from_bottom, 1);
         assert_eq!(parent_child.viewport_rows, 2);
     }
+
+    #[test]
+    fn reveal_moves_selection_into_view_and_supports_returning_up() {
+        let heights = vec![1; 12];
+        let gaps = vec![0; 12];
+        let bottom = list_scroll_start_to_reveal(&heights, &gaps, 4, 0, 11);
+        let bottom_metrics = list_scroll_metrics(&heights, &gaps, 4, bottom);
+        assert!(11 < bottom.saturating_add(bottom_metrics.viewport_rows));
+
+        let top = list_scroll_start_to_reveal(&heights, &gaps, 4, bottom, 0);
+        assert_eq!(top, 0);
+        let top_metrics = list_scroll_metrics(&heights, &gaps, 4, top);
+        assert!(top < top.saturating_add(top_metrics.viewport_rows));
+    }
 }

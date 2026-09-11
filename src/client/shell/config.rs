@@ -44,6 +44,15 @@ impl ClientShellState {
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
+            organization_collapsed: {
+                let mut values = self
+                    .organization_collapsed
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                values.sort();
+                values
+            },
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.endpoint_error = Some(error);
@@ -107,6 +116,7 @@ impl ClientShellConfig {
             spaces: config.ui.sidebar.spaces.clone(),
             agents: config.ui.sidebar.agents.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
+            organization: config.ui.organization.clone(),
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
             toast_delivery: config.ui.toast.delivery,
@@ -309,6 +319,7 @@ impl ClientShellConfig {
                 self.spaces = ui.sidebar.spaces.clone();
                 self.agents = ui.sidebar.agents.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
+                self.organization = ui.organization.clone();
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;
                 self.toast_delivery = ui.toast.delivery;
