@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Catálogo de skills — onboarding Argos</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0f141b;--panel:#19212b;--ink:#edf3f7;--muted:#a9b8c8;--line:#314052;--ok:#75d5ae;--warn:#f0c36b}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 10% 0,#243447,#0f141b 50%);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{max-width:1240px;margin:auto;padding:36px 22px 60px}header,section{background:#19212bdd;border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;box-shadow:0 14px 44px #0003}
+    h1{font-size:clamp(1.8rem,4vw,3rem);line-height:1.05;letter-spacing:-.04em;margin:0 0 9px}h2{color:var(--ok);font-size:1.25rem;margin:0 0 12px}h3{color:var(--warn);font-size:1rem;margin:19px 0 6px}.muted{color:var(--muted)}.badges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:13px}.badge{border:1px solid #4c9178;color:var(--ok);border-radius:99px;padding:3px 10px;font-size:.82rem}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px}table{width:100%;border-collapse:collapse;font-size:.9rem}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:9px 8px}th{color:var(--warn);white-space:nowrap}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{color:#c9eadb}pre{white-space:pre-wrap;background:#0a0e13;border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto}li{margin:6px 0}a{color:#9cd9ff}.callout{border-left:4px solid var(--ok);padding:10px 14px;background:#75d5ae12}
+  </style>
+</head>
+<body><main>
+  <header><div class="badges"><span class="badge">✅ schema 1</span><span class="badge">🧩 core obrigatório</span><span class="badge">💬 WACLI opt-out</span><span class="badge">🧪 validado</span></div><h1>Catálogo de skills<br><span class="muted">Argos onboarding</span></h1><p class="muted">Revisão 2026-09-11 · posse onboarding/ e docs/onboarding/skills/ · pacote local, sem instalação ou publicação.</p></header>
+  <div class="grid"><section><h2>🇧🇷 Decisão</h2><p>O manifesto consumível em <code>onboarding/skills/manifest.json</code> define a fonte única <code>SOUL.md</code>, core obrigatório, desenvolvimento opt-in e WACLI selecionado por padrão com <code>--without-whatsapp</code>.</p><p>A skill <code>argos-onboarding</code> orienta o mecanismo oficial idempotente; não cria instalador concorrente, não autentica e não lança inferência.</p></section><section><h2>🇬🇧 Decision</h2><p>The consumable manifest defines one canonical <code>SOUL.md</code>, mandatory core, opt-in development skills, and WhatsApp selected by default with a complete <code>--without-whatsapp</code> opt-out.</p><p><code>argos-onboarding</code> guides the official idempotent mechanism; it does not create a competing installer or perform authentication/inference.</p></section></div>
+  <section><h2>📚 Matriz auditada</h2><table><thead><tr><th>ID</th><th>Grupo</th><th>Decisão</th><th>Fonte / licença / limite</th></tr></thead><tbody>
+    <tr><td><code>herdr-runtime</code></td><td>core</td><td>incluir referência</td><td>Herdr skill, SHA <code>25A68BC3…9DB1E9F</code>; Apache-2.0 do repo; CLI/runtime real, sem snapshot.</td></tr>
+    <tr><td><code>herdr-coordination</code></td><td>core</td><td>adaptar</td><td>Mecânica local sem licença estabelecida; remover nomes, caminhos e contas privados.</td></tr>
+    <tr><td><code>handoff</code></td><td>core</td><td>adaptar</td><td>Fonte sem licença estabelecida; handoffs sanitizados, recuperáveis, sem transcript integral.</td></tr>
+    <tr><td><code>profile</code></td><td>core</td><td>autoria nova</td><td>Templates PT/EN; SOUL é fonte canônica.</td></tr>
+    <tr><td><code>wacli-generic</code></td><td>WhatsApp</td><td>default + opt-out</td><td>Adaptado de referência sem licença estabelecida; nenhum dado de conta/store/JID e sem pareamento.</td></tr>
+    <tr><td><code>skill-creator-adapter</code></td><td>development</td><td>opcional</td><td>Anthropic, SHA <code>DCD4803E…C2BCF</code>, Apache-2.0 observado; não duplicar nome.</td></tr>
+    <tr><td><code>diagnose</code>, <code>tdd</code></td><td>development</td><td>opcionais</td><td>Referências sem licença estabelecida; não exigidas pelo instalador.</td></tr>
+    <tr><td><code>architecture-review</code>, <code>zoom-out</code></td><td>development</td><td>opcionais</td><td>Referências sem licença estabelecida; sem camada gráfica no onboarding.</td></tr>
+    <tr><td><code>git-guardrails</code>, <code>setup-pre-commit</code></td><td>development</td><td>opcionais</td><td>Nenhum hook/dependência instalado como efeito colateral.</td></tr>
+    <tr><td><code>conselho-workflow</code></td><td>development</td><td>opcional</td><td>Guia configurável; nunca convocado automaticamente.</td></tr>
+  </tbody></table><p class="muted">Excluídos: xmacna/Redigir/publicadores, Nyx, OpenClaw e WACLI Hermes original por acoplamento privado.</p></section>
+  <section><h2>🧪 Provas</h2><pre>Invoke-OnboardingContractTests.ps1: PASS
+manifest, core, WACLI default/opt-out, templates, literal UTF-8,
+backup e fixtures de provedores separados
+quick_validate.py argos-onboarding: Skill is valid!</pre><p>Sem login/logout, download, instalação, QR, mensagem, inferência ou alegação de instalação limpa.</p></section>
+  <section><h2>🔗 Handoff</h2><div class="callout">Build Luna deve consumir o manifesto, resolver os templates relativos, substituir somente os quatro tokens, preservar a resposta literal, aplicar o opt-out antes de qualquer download e chamar o mecanismo oficial com backup/rollback. Handoff enviado ao agente existente em <code>w1T:p3</code>.</div></section>
+  <footer class="muted">Fonte canônica do relatório: <code>docs/onboarding/skills/CATALOGO.md</code>. Nenhum Rust, servidor ou deployment/oficial foi alterado.</footer>
+</main></body></html>
