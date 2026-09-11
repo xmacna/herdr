@@ -1,0 +1,6 @@
+{
+  "case": "network-failure",
+  "codex": {"present": true, "authenticated": null, "status_exit": 2},
+  "claude": {"present": true, "authenticated": null, "status_exit": 2},
+  "network": "unavailable"
+}

@@ -1,0 +1,6 @@
+{
+  "case": "disconnected",
+  "codex": {"present": true, "authenticated": false, "status_exit": 1},
+  "claude": {"present": true, "authenticated": false, "status_exit": 1},
+  "network": "available"
+}

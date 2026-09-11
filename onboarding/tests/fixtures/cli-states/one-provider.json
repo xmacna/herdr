@@ -1,0 +1,6 @@
+{
+  "case": "one-provider",
+  "codex": {"present": true, "authenticated": true, "status_exit": 0},
+  "claude": {"present": false, "authenticated": false, "status_exit": null},
+  "network": "available"
+}

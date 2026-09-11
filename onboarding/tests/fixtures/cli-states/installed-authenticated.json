@@ -1,0 +1,6 @@
+{
+  "case": "installed-authenticated",
+  "codex": {"present": true, "authenticated": true, "status_exit": 0},
+  "claude": {"present": true, "authenticated": true, "status_exit": 0},
+  "network": "available"
+}

@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "manifest_id": "argos-onboarding-skills-2026-09-11",
+  "profile": {
+    "canonical_template": "../templates/{locale}/SOUL.md",
+    "shared_reference_token": "{{ARGOS_PROFILE_PATH}}",
+    "literal_response_token": "{{ARGOS_PROFILE_RESPONSE}}",
+    "supported_locales": ["pt", "en"]
+  },
+  "selection": {
+    "core": ["herdr-runtime", "herdr-coordination", "handoff", "profile"],
+    "development_default": false,
+    "development": [
+      "skill-creator-adapter",
+      "diagnose",
+      "tdd",
+      "architecture-review",
+      "zoom-out",
+      "git-guardrails",
+      "setup-pre-commit"
+    ],
+    "whatsapp": {
+      "default_selected": true,
+      "opt_out_flag": "--without-whatsapp",
+      "opt_out_effect": "no download, install, pairing, or WACLI skill"
+    }
+  },
+  "candidates": [
+    {
+      "id": "herdr-runtime",
+      "group": "core",
+      "decision": "include-reference",
+      "source": "Herdr repository skill herdr",
+      "revision": "sha256:25A68BC36D9309048DB89E7D168F2E04D1689D734C5D72CC3688BF4FF9DB1E9F",
+      "license": "Apache-2.0 from the Herdr repository",
+      "dependencies": ["Herdr CLI", "HERDR_ENV=1"],
+      "constraint": "Use the installed runtime and its current CLI help; never ship an unversioned API snapshot."
+    },
+    {
+      "id": "herdr-coordination",
+      "group": "core",
+      "decision": "adapt",
+      "source": "local herdr-gerente mechanics",
+      "revision": "sha256:3E4654A068B7DCE01EF029466D24C41DE8DDB220DB93E3182225F504E8A2C720",
+      "license": "not established in source directory; reference and rewrite only",
+      "dependencies": ["Herdr CLI"],
+      "constraint": "Remove local names, paths, accounts, and private doctrine from the generic package."
+    },
+    {
+      "id": "handoff",
+      "group": "core",
+      "decision": "adapt",
+      "source": "handoff skill",
+      "revision": "sha256:D215DD8F2A19BF85FDAF67A3CDB5077641F6B4108F229BA79579414793D7B0A3",
+      "license": "not established in source directory; reference and rewrite only",
+      "dependencies": ["a writable workspace"],
+      "constraint": "Keep handoffs sanitized, path-based, and recoverable; do not copy transcripts."
+    },
+    {
+      "id": "profile",
+      "group": "core",
+      "decision": "include-authored",
+      "source": "new Argos generic templates in this package",
+      "revision": "package commit",
+      "license": "project terms",
+      "dependencies": ["none"],
+      "constraint": "SOUL.md is the single profile source; AGENTS.md and CLAUDE.md reference it."
+    },
+    {
+      "id": "skill-creator-adapter",
+      "group": "development",
+      "decision": "optional-adapt",
+      "source": "official Anthropic skill-creator reference",
+      "revision": "sha256:DCD4803E61E913E6FC27294184CD3A71F09F5E924FF20C8A9A20173E7B3C2BCF",
+      "license": "Apache-2.0 (LICENSE.txt observed); retain attribution if redistributed",
+      "dependencies": ["skill authoring process"],
+      "constraint": "Do not duplicate the skill-creator name; use this only as an authoring adapter."
+    },
+    {
+      "id": "wacli-generic",
+      "group": "whatsapp",
+      "decision": "include-default-opt-out",
+      "source": "wacli-hermes operational reference",
+      "revision": "sha256:BE542755D11C383017236408440FFF7F82D217C3262B5D04FEBCEB6B095F2B5B",
+      "license": "not established in source directory; generic rewrite only",
+      "dependencies": ["WACLI installation chosen by user", "explicit account selection"],
+      "constraint": "No accounts, stores, phone numbers, JIDs, history, pairing, or sending in this package."
+    },
+    {
+      "id": "diagnose",
+      "group": "development",
+      "decision": "optional-reference",
+      "source": "diagnose skill",
+      "revision": "sha256:28886402BBFA0470248086EAB9106A103B964B76AE9496E63FF0C8A6761B6D13",
+      "license": "not established in source directory; no vendoring",
+      "dependencies": ["a reproducible feedback loop"],
+      "constraint": "Use only when a concrete failure is reported; do not run its HITL script during onboarding."
+    },
+    {
+      "id": "tdd",
+      "group": "development",
+      "decision": "optional-reference",
+      "source": "TDD skill",
+      "revision": "sha256:AF059705061156FD4845DDBB736FE92B564118AC5F03551E09EF9E8F6D970638",
+      "license": "not established in source directory; no vendoring",
+      "dependencies": ["project test runner"],
+      "constraint": "Optional engineering workflow; not required by the installer."
+    },
+    {
+      "id": "architecture-review",
+      "group": "development",
+      "decision": "optional-reference",
+      "source": "improve-codebase-architecture skill",
+      "revision": "sha256:F00DE04C7BB83CFD0ED1F97F3401A83838212C30856912EE44BA406649E6C749",
+      "license": "not established in source directory; no vendoring",
+      "dependencies": ["project glossary and ADRs"],
+      "constraint": "Do not make onboarding depend on architecture review or graphical reports."
+    },
+    {
+      "id": "zoom-out",
+      "group": "development",
+      "decision": "optional-reference",
+      "source": "zoom-out skill",
+      "revision": "sha256:2A6894C7F9B1C9C55F451C625A834C4F377E217B623A85280E55DB5FE9CACF48",
+      "license": "not established in source directory; no vendoring",
+      "dependencies": ["project documentation"],
+      "constraint": "Optional context mapping only."
+    },
+    {
+      "id": "git-guardrails",
+      "group": "development",
+      "decision": "optional-reference",
+      "source": "git-guardrails-claude-code skill",
+      "revision": "sha256:03C4DE7613C712AEA336D64C467EA3ED14BE2CBD52345925FE949C75C01C29F7",
+      "license": "not established in source directory; no installation in onboarding",
+      "dependencies": ["Claude Code project settings"],
+      "constraint": "Never install hooks as a side effect of profile setup."
+    },
+    {
+      "id": "setup-pre-commit",
+      "group": "development",
+      "decision": "optional-reference",
+      "source": "setup-pre-commit skill",
+      "revision": "sha256:872F4037CB7E6E0E340D4175C086550072959925DFFC87B160D1A30DC9F63BBD",
+      "license": "not established in source directory; no installation in onboarding",
+      "dependencies": ["project package manager"],
+      "constraint": "Only a later explicit project action may add hooks or dependencies."
+    },
+    {
+      "id": "conselho-workflow",
+      "group": "development",
+      "decision": "optional-adapt",
+      "source": "conselho-workflow skill",
+      "revision": "sha256:F4B2C19B30D31C8E17EFCB5F7CFF7E33E1C5A2F2F5A8EC42B73F2B5C4F572F24",
+      "license": "not established in source directory; reference only",
+      "dependencies": ["user request and available models"],
+      "constraint": "Distribute as configurable guidance; never invoke a council automatically."
+    }
+  ],
+  "excluded": [
+    {"id": "xmacna-specific", "reason": "brand, account, host, or private infrastructure coupling"},
+    {"id": "redigir-and-publishers", "reason": "fixed customer accounts and external publishing effects"},
+    {"id": "nyx-agent-bridge", "reason": "machine-specific coordination and network access"},
+    {"id": "openclaw-watch", "reason": "machine/service-specific operations"},
+    {"id": "wacli-hermes-original", "reason": "private account/store operational content; replaced by wacli-generic"}
+  ]
+}
