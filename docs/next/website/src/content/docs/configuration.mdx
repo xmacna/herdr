@@ -300,6 +300,53 @@ The active palette is applied in this order: built-in theme, `[theme.custom]`, t
 
 The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](/docs/config-reference/) for sizing, collapsed mode, Agent panel ordering, mouse behavior, pane borders, and other presentation settings.
 
+### Organization tree
+
+The optional `ui.organization` section presents registered agents as a local coordinator/manager/worker tree in the client sidebar. It is disabled by default and does not create panes or change the server protocol. The runtime remains owned by the selected endpoint.
+
+```toml
+[ui.organization]
+enabled = true
+root = "Organization"
+reserve_label = "Reserve"
+orphan_label = "Unassigned"
+pending_label = "Pending"
+
+[[ui.organization.agents]]
+id = "coordinator"
+label = "Coordinator"
+pane_id = "machine-a:p1"
+endpoint_id = "ssh:machine-a"
+role = "coordinator"
+model = "example-model"
+
+[[ui.organization.agents]]
+id = "manager"
+label = "Manager"
+parent_id = "coordinator"
+pane_id = "machine-a:p2"
+endpoint_id = "ssh:machine-a"
+role = "manager"
+task = "Coordinate delivery"
+
+[[ui.organization.agents]]
+id = "worker"
+label = "Worker"
+parent_id = "manager"
+pane_id = "machine-a:p3"
+endpoint_id = "ssh:machine-a"
+role = "worker"
+task = "Implement a change"
+```
+
+Each registration needs a stable, user-chosen `id`; the display `label` is not an identity. `parent_id` builds the hierarchy. Optional metadata fields are `role`, `owner_id`, `area`, `task`, and `model`. A runtime is bound only when both `endpoint_id` and `pane_id` match the selected endpoint and pane. If a pane is recreated, update `pane_id` manually; setting only `HERDR_CONFIG_PATH` does not create an isolated runtime or socket.
+
+An entry with `reserved = true` can represent planned capacity without a runtime. Runtime agents without a matching registration appear under the orphan group and remain focusable. Invalid or duplicate registrations appear under Pending so they remain visible for repair. A reservation without a runtime does not imply an attention state.
+
+In Navigate mode, select the organization row with Up/Down, use Left/Right to fold or expand groups, press Enter to focus a pane, and press Tab to switch to projects. From the projects section, Tab returns to the organization tree. The selected row can be outside the current viewport; the sidebar scrolls to reveal it. Mouse clicks on a row focus it, while clicking its fold control only changes expansion.
+
+Organization metadata uses multiple rows, so widen `ui.sidebar_width` when longer role, model, or task values should remain readable. Narrow sidebars intentionally show a partial viewport and truncate text, but keep the state and focus action available. The tree is presentation metadata: it does not infer identity from labels, persist runtime tokens, or replace endpoint/server state.
+
 `ui.pane_borders` accepts `"auto"` (the default, borders only for split panes), `"always"` (also frame a single pane), or `"off"`. A single-pane frame requires `ui.pane_outer_borders = true`, because all its edges are outer edges. Existing boolean values remain valid: `true` means `"auto"` and `false` means `"off"`.
 
 Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.

@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use super::render::{display_width, put_right_text, put_text, ShellRenderState};
 use super::*;
 

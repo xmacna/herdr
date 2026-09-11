@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use super::*;
 
 #[test]
@@ -885,6 +886,26 @@ fn organization_demo_agent(pane_id: &str, name: &str, status: AgentStatus) -> Cl
     }
 }
 
+fn organization_profile_surface(pane_ids: &[String]) -> PaneSurfaceFrame {
+    let mut surface = surface();
+    let template = surface
+        .panes
+        .first()
+        .cloned()
+        .expect("profile surface template");
+    surface.panes = pane_ids
+        .iter()
+        .enumerate()
+        .map(|(index, pane_id)| {
+            let mut pane = template.clone();
+            pane.pane_id = pane_id.clone();
+            pane.focused = index == 0;
+            pane
+        })
+        .collect();
+    surface
+}
+
 fn organization_demo_frame_text(frame: &FrameData) -> String {
     frame
         .cells
@@ -1011,14 +1032,15 @@ fn organization_navigation_switches_to_projects_and_handles_removed_selection() 
         "projects footer: {projects_text}"
     );
 
-    state.navigate_organization_key = Some("organization:local:agent:worker-0".into());
+    state.navigate_organization_key =
+        Some("organization:v1:scope:5:local:agent:registration:8:worker-0".into());
     state.config.organization.agents.clear();
     let mut refreshed = state.snapshot.as_deref().cloned().unwrap();
     refreshed.revision += 1;
     state.set_snapshot(Box::new(refreshed));
     assert_eq!(
         state.navigate_organization_key.as_deref(),
-        Some("organization:local:group:root")
+        Some("organization:v1:scope:5:local:group:virtual:4:root")
     );
 }
 
@@ -1289,7 +1311,8 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     state.sidebar_section_split = 0.5;
     state.handle_input_bytes(&[0x02]);
     state.handle_input_bytes(b"w");
-    state.navigate_organization_key = Some("organization:local:agent:worker-ui".into());
+    state.navigate_organization_key =
+        Some("organization:v1:scope:5:local:agent:registration:9:worker-ui".into());
     let narrow_frame = state.compose(72, 18).expect("narrow shell");
     let narrow_json = serde_json::to_vec(&narrow_frame).expect("narrow frame json");
     let narrow = organization_demo_frame_text(&narrow_frame);
@@ -1321,19 +1344,43 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
 fn organization_compose_scale_profile_is_sequential_and_non_gating() {
     for agent_count in [1usize, 15] {
         let mut projected = snapshot();
-        projected.agents = (0..agent_count)
-            .map(|index| {
-                organization_demo_agent(
-                    &format!("profile-pane-{index}"),
+        let pane_ids = (0..agent_count)
+            .map(|index| format!("profile-pane-{index}"))
+            .collect::<Vec<_>>();
+        projected.focused_pane_id = pane_ids.first().cloned();
+        projected.panes = pane_ids
+            .iter()
+            .enumerate()
+            .map(|(index, pane_id)| crate::protocol::ClientShellPane {
+                pane_id: pane_id.clone(),
+                workspace_id: "ws_1".into(),
+                tab_id: "tab_1".into(),
+                label: Some(format!("Profile pane {index}")),
+                cwd: Some("/profile".into()),
+                foreground_cwd: Some("/profile".into()),
+                focused: index == 0,
+                right_click_passthrough: false,
+            })
+            .collect();
+        projected.agents = pane_ids
+            .iter()
+            .enumerate()
+            .map(|(index, pane_id)| {
+                let mut agent = organization_demo_agent(
+                    pane_id,
                     &format!("Profile agent {index}"),
                     if index % 3 == 0 {
                         AgentStatus::Blocked
                     } else {
                         AgentStatus::Working
                     },
-                )
+                );
+                agent.focused = index == 0;
+                agent
             })
             .collect();
+        assert_eq!(projected.panes.len(), agent_count);
+        assert_eq!(projected.agents.len(), agent_count);
         let mut config = Config::default();
         config.ui.organization.enabled = true;
         config.ui.organization.agents = (0..agent_count)
@@ -1347,7 +1394,17 @@ fn organization_compose_scale_profile_is_sequential_and_non_gating() {
             .collect();
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
         state.set_snapshot(Box::new(projected));
-        state.set_pane_surface(surface());
+        let profile_surface = organization_profile_surface(&pane_ids);
+        assert_eq!(profile_surface.panes.len(), agent_count);
+        assert_eq!(
+            profile_surface
+                .panes
+                .iter()
+                .filter(|pane| pane.focused)
+                .count(),
+            1
+        );
+        state.set_pane_surface(profile_surface);
 
         let started = std::time::Instant::now();
         for _ in 0..3 {

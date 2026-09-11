@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use crossterm::event::{KeyCode, KeyModifiers};
 
 mod io;

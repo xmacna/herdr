@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 
 use super::Palette;

@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use std::collections::{HashMap, HashSet, VecDeque};
 
 mod actions;

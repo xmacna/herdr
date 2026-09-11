@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use super::*;
 
 pub(super) fn merged_config_diagnostic(

@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use std::collections::{HashMap, HashSet};
 
 use crate::api::schema::AgentStatus;
@@ -155,12 +156,20 @@ fn aggregate_states(
     aggregate
 }
 
-fn scoped_group(scope: &str, key: &str) -> String {
-    format!("organization:{scope}:group:{key}")
+fn scoped_key(scope: &str, namespace: &str, kind: &str, value: &str) -> String {
+    format!(
+        "organization:v1:scope:{}:{scope}:{namespace}:{kind}:{}:{value}",
+        scope.len(),
+        value.len()
+    )
 }
 
-fn scoped_agent(scope: &str, key: &str) -> String {
-    format!("organization:{scope}:agent:{key}")
+fn scoped_group(scope: &str, key: &str) -> String {
+    scoped_key(scope, "group", "virtual", key)
+}
+
+fn scoped_agent(scope: &str, kind: &str, value: &str) -> String {
+    scoped_key(scope, "agent", kind, value)
 }
 
 // The recursive renderer passes the complete immutable tree context so that
@@ -264,17 +273,14 @@ pub(super) fn rows(
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            let base = if entry.id.trim().is_empty() {
-                format!("invalid:{index}")
-            } else {
-                entry.id.trim().to_owned()
-            };
-            let key = if id_counts.get(entry.id.trim()).copied().unwrap_or(0) > 1 {
-                format!("{base}:duplicate:{index}")
-            } else {
-                base
-            };
-            scoped_agent(endpoint_scope, &key)
+            let id = entry.id.trim();
+            if id.is_empty() {
+                return scoped_agent(endpoint_scope, "invalid", &index.to_string());
+            }
+            if id_counts.get(id).copied().unwrap_or(0) > 1 {
+                return scoped_agent(endpoint_scope, "duplicate", &index.to_string());
+            }
+            scoped_agent(endpoint_scope, "registration", id)
         })
         .collect::<Vec<_>>();
     let unique_ids = entries
@@ -509,7 +515,7 @@ pub(super) fn rows(
         .iter()
         .filter(|agent| !registered_panes.contains(agent.pane_id.as_str()))
         .map(|agent| {
-            let key = scoped_agent(endpoint_scope, &format!("orphan:{}", agent.pane_id));
+            let key = scoped_agent(endpoint_scope, "orphan", &agent.pane_id);
             OrganizationRow {
                 key: key.clone(),
                 parent_key: Some(scoped_group(endpoint_scope, "orphan")),
@@ -843,5 +849,76 @@ mod tests {
         assert!(rows(&snapshot, &config, "ssh:one", &HashSet::new(), None)
             .iter()
             .any(|row| row.pane_id.as_deref() == Some("w1:p1")));
+    }
+
+    #[test]
+    fn registration_key_namespaces_are_distinct_and_each_pane_remains_focusable() {
+        let entries = vec![
+            OrganizationAgentConfig {
+                id: String::new(),
+                label: "Invalid index zero".into(),
+                pane_id: Some("invalid-pane".into()),
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "invalid:0".into(),
+                label: "Literal invalid key".into(),
+                pane_id: Some("literal-invalid-pane".into()),
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "duplicate".into(),
+                label: "Duplicate first".into(),
+                pane_id: Some("duplicate-one".into()),
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "duplicate".into(),
+                label: "Duplicate second".into(),
+                pane_id: Some("duplicate-two".into()),
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "duplicate:duplicate:3".into(),
+                label: "Literal duplicate key".into(),
+                pane_id: Some("literal-duplicate-pane".into()),
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "orphan:w1:p1".into(),
+                label: "Registered orphan-shaped id".into(),
+                pane_id: Some("registered-pane".into()),
+                ..Default::default()
+            },
+        ];
+        let snapshot = test_snapshot(&[
+            ("invalid-pane", AgentStatus::Working),
+            ("literal-invalid-pane", AgentStatus::Working),
+            ("duplicate-one", AgentStatus::Working),
+            ("duplicate-two", AgentStatus::Working),
+            ("literal-duplicate-pane", AgentStatus::Working),
+            ("registered-pane", AgentStatus::Working),
+            ("w1:p1", AgentStatus::Working),
+        ]);
+        let config = config(entries);
+        let all_rows = rows(&snapshot, &config, "local", &HashSet::new(), None);
+        let pane_rows = all_rows
+            .iter()
+            .filter_map(|row| row.pane_id.as_deref().map(|pane| (row.key.clone(), pane)))
+            .collect::<Vec<_>>();
+        let keys = pane_rows
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(keys.len(), pane_rows.len());
+        assert_eq!(pane_rows.len(), 7, "pane rows: {pane_rows:?}; all rows: {all_rows:?}");
+        for (key, pane) in pane_rows {
+            let selected = rows(&snapshot, &config, "local", &HashSet::new(), Some(&key))
+                .into_iter()
+                .filter(|row| row.selected)
+                .collect::<Vec<_>>();
+            assert_eq!(selected.len(), 1, "selection key {key} must be unique");
+            assert_eq!(selected[0].pane_id.as_deref(), Some(pane));
+        }
     }
 }

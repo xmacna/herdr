@@ -1,3 +1,4 @@
+// Modified under the Apache License, Version 2.0; see LICENSE.
 use serde::Deserialize;
 
 /// Client-local organization metadata for presenting agents as a hierarchy.
