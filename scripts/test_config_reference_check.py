@@ -248,6 +248,15 @@ class RealModelTests(unittest.TestCase):
         self.assertGreater(len(keys), 100)
         self.assertIn("keys.prefix", keys)
         self.assertIn("ui.sound.agents.claude", keys)
+        for key in (
+            "ui.organization.enabled",
+            "ui.organization.root",
+            "ui.organization.reserve_label",
+            "ui.organization.orphan_label",
+            "ui.organization.pending_label",
+        ):
+            self.assertIn(key, keys)
+        self.assertNotIn("ui.organization.agents", keys)
         self.assertNotIn("keys.command", keys)
 
     def test_preview_reference_matches_real_config_model(self) -> None:

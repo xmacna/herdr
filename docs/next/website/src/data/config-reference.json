@@ -854,6 +854,36 @@
       "title": "UI and sidebar",
       "keys": [
         {
+          "key": "ui.organization.enabled",
+          "type": "boolean",
+          "default": "false",
+          "description": "Show the optional client-local organization tree in the agent sidebar."
+        },
+        {
+          "key": "ui.organization.root",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Root label for the optional organization tree. Empty uses Organization."
+        },
+        {
+          "key": "ui.organization.reserve_label",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Label for reserved organization entries. Empty uses Reserve."
+        },
+        {
+          "key": "ui.organization.orphan_label",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Label for runtime agents without a matching registration. Empty uses Unassigned."
+        },
+        {
+          "key": "ui.organization.pending_label",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Label for invalid or duplicate registrations. Empty uses Pending."
+        },
+        {
           "key": "ui.sidebar_width",
           "type": "integer",
           "default": "26",
