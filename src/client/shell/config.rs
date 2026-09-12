@@ -244,6 +244,8 @@ impl ClientShellConfig {
     pub(crate) fn from_config(config: &Config) -> Self {
         let theme_runtime = crate::app::client_theme_runtime_from_config(config);
         Self {
+            host_mode: crate::client::host::HostMode::Ansi,
+            host_capabilities: crate::client::host::HostCapabilities::ansi(),
             sidebar_width: config.ui.sidebar_width,
             sidebar_min_width: config.ui.sidebar_min_width,
             sidebar_max_width: config.ui.sidebar_max_width,
@@ -293,6 +295,16 @@ impl ClientShellConfig {
             startup_config_diagnostic: None,
             startup_onboarding: false,
         }
+    }
+
+    pub(crate) fn with_host_mode(mut self, mode: crate::client::host::HostMode) -> Self {
+        self.host_mode = mode;
+        self.host_capabilities = mode.capabilities();
+        self
+    }
+
+    pub(crate) fn host_capabilities(&self) -> crate::client::host::HostCapabilities {
+        self.host_capabilities
     }
 
     pub(crate) fn with_startup_config_diagnostic(mut self, diagnostic: Option<String>) -> Self {

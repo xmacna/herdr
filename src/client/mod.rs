@@ -26,11 +26,14 @@ mod errors;
 mod events;
 mod frame_output;
 mod handshake;
+pub(crate) mod host;
 mod input;
 mod integrated_graphics;
 mod integrated_presentation;
 #[cfg(all(test, windows))]
 mod integrated_graphics_test;
+#[cfg(all(test, windows))]
+mod host_integration_test;
 mod loop_config;
 mod notifications;
 mod shell;
@@ -50,6 +53,7 @@ use clipboard_forwarding::forward_clipboard;
 use config_reload::reload_local_client_config;
 use config_reload::{apply_reload, init_logging};
 use events::ClientLoopEvent;
+use host::HostMode;
 pub(crate) use integrated_graphics::IntegratedGraphicsSink;
 pub(crate) use integrated_presentation::{
     IntegratedOfficeNode, IntegratedOfficeNodeKind, IntegratedOfficeOperation,
@@ -153,8 +157,12 @@ fn run_client_with_mode(
 ) -> io::Result<()> {
     init_logging();
 
+    let host_mode = host::HostMode::from_environment()?;
+    let host_capabilities = host_mode.capabilities();
     let loaded_config = crate::config::Config::load();
-    crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    if host_capabilities.ansi_output {
+        crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    }
     let client_rendered_shell = attach_request.is_none();
     let socket_path = client_socket_path();
     let keybinding_source = client_shell_keybinding_source();
@@ -166,6 +174,7 @@ fn run_client_with_mode(
         };
     let shell_config = client_rendered_shell.then(|| {
         shell::ClientShellConfig::from_config(&loaded_config.config)
+            .with_host_mode(host_mode)
             .with_startup_config_diagnostic(startup_config_diagnostic)
             .with_startup_onboarding(loaded_config.config.should_show_onboarding())
             .with_keybinding_source(keybinding_source)
@@ -176,13 +185,16 @@ fn run_client_with_mode(
     let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
     let host_cursor = loaded_config.config.ui.host_cursor;
     let remote_image_paste_key = client_remote_image_paste_key(&loaded_config.config);
-    let kitty_graphics_enabled =
-        loaded_config.config.kitty_graphics_enabled() && client_rendered_shell;
-    let pixel_geometry_enabled = kitty_graphics_enabled || attach_escape.is_some();
+    let kitty_graphics_enabled = host_capabilities.ansi_output
+        && loaded_config.config.kitty_graphics_enabled()
+        && client_rendered_shell;
+    let pixel_geometry_enabled = host_capabilities.ansi_output
+        && (kitty_graphics_enabled || attach_escape.is_some());
     let endpoint_keybindings = shell_config
         .as_ref()
         .is_some_and(shell::ClientShellConfig::uses_endpoint_keybindings);
     let loop_config = ClientLoopConfig {
+        host_mode,
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
         redraw_on_focus_gained,
@@ -190,7 +202,7 @@ fn run_client_with_mode(
         kitty_graphics_enabled,
         pixel_geometry_enabled,
         pixel_geometry_fallback: kitty_graphics_enabled,
-        mouse_capture_active: mouse_capture,
+        mouse_capture_active: mouse_capture && host_capabilities.mouse,
         endpoint_keybindings,
         remote_image_paste_key,
         shell_config,
@@ -223,8 +235,23 @@ fn run_client_with_mode(
     };
 
     // Get the terminal geometry before handshake (before raw mode).
-    let (cols, rows, cell_width_px, cell_height_px, exact_cell_size) =
-        initial_terminal_geometry(pixel_geometry_enabled, kitty_graphics_enabled)?;
+    let (cols, rows, cell_width_px, cell_height_px, exact_cell_size) = if host_mode
+        == HostMode::Win32Experimental
+    {
+        let (cols, rows) = host::native_grid_size(
+            host::NATIVE_WINDOW_WIDTH_PX,
+            host::NATIVE_WINDOW_HEIGHT_PX,
+        )?;
+        (
+            cols,
+            rows,
+            host::NATIVE_CELL_WIDTH_PX,
+            host::NATIVE_CELL_HEIGHT_PX,
+            true,
+        )
+    } else {
+        initial_terminal_geometry(pixel_geometry_enabled, kitty_graphics_enabled)?
+    };
 
     let shell_surface_size = loop_config
         .shell_config
@@ -281,18 +308,27 @@ fn run_client_with_mode(
 
     // The federated shell can show connection notices without any server snapshot.
     let direct_attach = attach_escape.is_some();
-    let terminal_guard = if direct_attach {
-        setup_direct_attach_terminal(mouse_capture)
+    let terminal_guard = if host_capabilities.ansi_output {
+        Some(
+            if direct_attach {
+                setup_direct_attach_terminal(mouse_capture)
+            } else {
+                setup_terminal(mouse_capture)
+            }
+            .map_err(|err| {
+                eprintln!("herdr: failed to set up terminal: {err}");
+                err
+            })?,
+        )
     } else {
-        setup_terminal(mouse_capture)
-    }
-    .map_err(|err| {
-        eprintln!("herdr: failed to set up terminal: {err}");
-        err
-    })?;
+        None
+    };
 
     // Install a panic hook so the foreground client always restores its terminal.
-    let panic_restore = terminal_guard.panic_restore();
+    let panic_restore: Box<dyn Fn() + Send + Sync> = terminal_guard
+        .as_ref()
+        .map(|guard| Box::new(guard.panic_restore()) as Box<dyn Fn() + Send + Sync>)
+        .unwrap_or_else(|| Box::new(|| {}));
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         panic_restore();
@@ -333,7 +369,7 @@ fn run_client_with_mode(
     });
 
     // Restore the terminal before printing any final status message.
-    let terminal_restore_failed = terminal_guard.restore().is_err();
+    let terminal_restore_failed = terminal_guard.is_some_and(|guard| guard.restore().is_err());
 
     if let Err(err) = result {
         let _ = writeln!(io::stderr(), "herdr: {err}");
@@ -422,8 +458,10 @@ async fn run_client_loop(
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
     #[cfg(windows)]
-    if let Some(output) = std::env::var_os("HERDR_INTEGRATED_PRESENTATION_OUTPUT") {
-        state.set_integrated_presentation_sink(Some(Box::new(IntegratedGraphicsSink::new(output))));
+    if state.host_mode() == HostMode::Ansi {
+        if let Some(output) = std::env::var_os("HERDR_INTEGRATED_PRESENTATION_OUTPUT") {
+            state.set_integrated_presentation_sink(Some(Box::new(IntegratedGraphicsSink::new(output))));
+        }
     }
     let mut federated = endpoint_catalog.has_enabled_ssh();
     if let Some(shell) = state.shell.as_mut() {
@@ -454,18 +492,20 @@ async fn run_client_loop(
         tokio::sync::mpsc::channel::<endpoint::EndpointSupervisorEvent>(64);
     // Keep Windows console draining independent of server-frame backpressure.
     #[cfg(windows)]
-    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<ClientLoopEvent>(256);
+    let (stdin_tx, stdin_rx_initial) = tokio::sync::mpsc::channel::<ClientLoopEvent>(256);
     #[cfg(unix)]
     let stdin_tx = event_tx.clone();
 
     let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
 
     // Spawn the stdin reader thread.
-    let will_query_host_terminal_theme =
-        state.attach_escape.is_none() && should_query_host_terminal_theme();
+    let will_query_host_terminal_theme = config.host_mode == HostMode::Ansi
+        && state.attach_escape.is_none()
+        && should_query_host_terminal_theme();
     // Terminals behind ConPTY report no pixel size through the ioctl, so ask the
     // host terminal directly instead of falling back to an assumed cell size.
-    let will_query_host_cell_size = state.attach_escape.is_none()
+    let will_query_host_cell_size = config.host_mode == HostMode::Ansi
+        && state.attach_escape.is_none()
         && host_cell_size_query_required(state.kitty_graphics_enabled);
     let stdin_quit = should_quit.clone();
     let stdin_mouse_capture_active = host_mouse_capture_active.clone();
@@ -477,20 +517,23 @@ async fn run_client_loop(
         .lock()
         .map(|matcher| matcher.active_handle())
         .unwrap_or_default();
-    std::thread::spawn(move || {
-        input::stdin_reader_loop(
-            stdin_tx,
-            &stdin_quit,
-            will_query_host_terminal_theme,
-            will_query_host_cell_size,
-            stdin_mouse_capture_active,
-            stdin_sgr_pixels_active,
-            #[cfg(unix)]
-            stdin_direct_response,
-            #[cfg(unix)]
-            stdin_direct_response_active,
-        );
-    });
+    if config.host_mode == HostMode::Ansi {
+        let console_stdin_tx = stdin_tx.clone();
+        std::thread::spawn(move || {
+            input::stdin_reader_loop(
+                console_stdin_tx,
+                &stdin_quit,
+                will_query_host_terminal_theme,
+                will_query_host_cell_size,
+                stdin_mouse_capture_active,
+                stdin_sgr_pixels_active,
+                #[cfg(unix)]
+                stdin_direct_response,
+                #[cfg(unix)]
+                stdin_direct_response_active,
+            );
+        });
+    }
 
     if will_query_host_terminal_theme {
         query_host_terminal_theme();
@@ -510,20 +553,22 @@ async fn run_client_loop(
     let resize_cell_size = reported_cell_size.clone();
     let pixel_geometry_enabled = state.pixel_geometry_enabled;
     let pixel_geometry_fallback = config.pixel_geometry_fallback;
-    std::thread::spawn(move || {
-        resize_poll_loop(
-            resize_tx,
-            cols,
-            rows,
-            initial_cell_width_px,
-            initial_cell_height_px,
-            initial_pixel_geometry_exact,
-            pixel_geometry_enabled,
-            pixel_geometry_fallback,
-            &resize_cell_size,
-            &resize_quit,
-        );
-    });
+    if config.host_mode == HostMode::Ansi {
+        std::thread::spawn(move || {
+            resize_poll_loop(
+                resize_tx,
+                cols,
+                rows,
+                initial_cell_width_px,
+                initial_cell_height_px,
+                initial_pixel_geometry_exact,
+                pixel_geometry_enabled,
+                pixel_geometry_fallback,
+                &resize_cell_size,
+                &resize_quit,
+            );
+        });
+    }
 
     let mut write_stream = if let Some((stream, handshake)) = initial {
         let max_frame_size = if state.kitty_graphics_enabled {
@@ -551,6 +596,26 @@ async fn run_client_loop(
     } else {
         endpoint::EndpointRegistry::empty()
     };
+    #[cfg(windows)]
+    let _native_host = if config.host_mode == HostMode::Win32Experimental {
+        let event_tx = stdin_tx.clone();
+        let session = crate::platform::windows_host::NativeHostSession::start(
+            crate::platform::windows_host::NativeHostConfig {
+                title: "Herdr native client".to_owned(),
+                width: host::NATIVE_WINDOW_WIDTH_PX,
+                height: host::NATIVE_WINDOW_HEIGHT_PX,
+            },
+            move |event| host::forward_native_event(event, &event_tx),
+        )
+        .map_err(|error| ClientError::HostUnsupported(error.to_string()))?;
+        Some(host::NativeHostLease::new(session))
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    // Declare the receiver after the host lease so every return path drops it before the lease
+    // posts WM_CLOSE and joins the GUI thread.
+    let mut stdin_rx = stdin_rx_initial;
     let mut supervisors =
         endpoint::EndpointSupervisors::new(&endpoint_catalog.ssh, std::time::Instant::now());
     if federated {
@@ -562,7 +627,7 @@ async fn run_client_loop(
             std::time::Instant::now(),
         );
     }
-    if local_unavailable {
+    if local_unavailable && config.host_mode == HostMode::Ansi {
         if let Some(frame) = state
             .shell
             .as_mut()
@@ -1077,6 +1142,107 @@ async fn run_client_loop(
                 }
                 // Direct terminal attach is Unix-only; every Windows client uses ClientShell.
             }
+            #[cfg(windows)]
+            ClientLoopEvent::NativeHostReady {
+                hwnd,
+                width,
+                height,
+            } => {
+                let sink = IntegratedGraphicsSink::new_hwnd(hwnd)
+                    .map_err(|error| ClientError::Presentation(error.to_string()))?;
+                state.set_integrated_presentation_sink(Some(Box::new(sink)));
+                let (new_cols, new_rows) = host::native_grid_size(width, height)
+                    .map_err(|error| ClientError::HostUnsupported(error.to_string()))?;
+                state.reported_size = (new_cols, new_rows);
+                state.reported_cell_size = (
+                    host::NATIVE_CELL_WIDTH_PX,
+                    host::NATIVE_CELL_HEIGHT_PX,
+                );
+                state.pixel_geometry_exact = true;
+                state.request_repaint();
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.set_graphics_cell_size(
+                        host::NATIVE_CELL_WIDTH_PX,
+                        host::NATIVE_CELL_HEIGHT_PX,
+                    );
+                    shell.invalidate_pane_surface();
+                }
+                let frame = state
+                    .shell
+                    .as_mut()
+                    .and_then(|shell| shell.compose(new_cols, new_rows));
+                if let Some(frame) = frame {
+                    state.present_frame(frame);
+                }
+            }
+            #[cfg(windows)]
+            ClientLoopEvent::NativeHostResize { width, height } => {
+                if !state.host_capabilities().resize {
+                    return Err(ClientError::HostUnsupported(
+                        "native host resize is unavailable for the selected host".to_owned(),
+                    ));
+                }
+                let (cell_width_px, cell_height_px) = state.reported_cell_size;
+                if cell_width_px == 0 || cell_height_px == 0 {
+                    return Err(ClientError::HostUnsupported(
+                        "native host resize arrived without a cell size".to_owned(),
+                    ));
+                }
+                let new_cols = u16::try_from(width / cell_width_px)
+                    .map_err(|_| ClientError::HostUnsupported("native host width is too large".to_owned()))?
+                    .max(1);
+                let new_rows = u16::try_from(height / cell_height_px)
+                    .map_err(|_| ClientError::HostUnsupported("native host height is too large".to_owned()))?
+                    .max(1);
+                state.reported_size = (new_cols, new_rows);
+                state.pixel_geometry_exact = true;
+                state.request_repaint();
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.set_graphics_cell_size(cell_width_px, cell_height_px);
+                    shell.invalidate_pane_surface();
+                    let message = client_shell_resize_message(
+                        shell,
+                        new_cols,
+                        new_rows,
+                        cell_width_px,
+                        cell_height_px,
+                        true,
+                    );
+                    write_to_server(&mut write_stream, &message)
+                        .map_err(ClientError::ConnectionLost)?;
+                }
+            }
+            #[cfg(windows)]
+            ClientLoopEvent::NativeHostFocus { focused } => {
+                if state.shell.is_some() && write_stream.active_surface_available() {
+                    write_to_server(
+                        &mut write_stream,
+                        &ClientMessage::ClientShellFocus { focused },
+                    )
+                    .map_err(ClientError::ConnectionLost)?;
+                }
+            }
+            #[cfg(windows)]
+            ClientLoopEvent::NativeHostRedraw => {
+                state.request_repaint();
+                let frame = state
+                    .shell
+                    .as_mut()
+                    .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
+                if let Some(frame) = frame {
+                    state.present_frame(frame);
+                }
+            }
+            #[cfg(windows)]
+            ClientLoopEvent::NativeHostClose => {
+                info!("native client host closed; detaching");
+                let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
+                return Ok(());
+            }
+            #[cfg(windows)]
+            ClientLoopEvent::NativeHostError(message) => {
+                return Err(ClientError::HostUnsupported(message));
+            }
             ClientLoopEvent::TerminalUnavailable(err) => {
                 info!(err = %err, "client terminal unavailable; detaching");
                 let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
@@ -1381,6 +1547,11 @@ async fn run_client_loop(
                         crate::render_prof::flush_if_due();
                     }
                     ServerMessage::Terminal(frame) => {
+                        if !state.host_capabilities().ansi_output {
+                            return Err(ClientError::HostUnsupported(
+                                "raw terminal output requires an ANSI host".to_owned(),
+                            ));
+                        }
                         if state.kitty_graphics_enabled
                             && contains_kitty_graphics_bytes(&frame.bytes)
                         {
@@ -1391,6 +1562,11 @@ async fn run_client_loop(
                         let _ = stdout.flush();
                     }
                     ServerMessage::Graphics { bytes } => {
+                        if !state.host_capabilities().ansi_output {
+                            return Err(ClientError::HostUnsupported(
+                                "raw graphics output requires an ANSI host".to_owned(),
+                            ));
+                        }
                         if state.kitty_graphics_enabled {
                             record_received_kitty_graphics(&bytes);
                             let mut stdout = io::stdout();
@@ -1399,6 +1575,11 @@ async fn run_client_loop(
                         }
                     }
                     ServerMessage::TerminalBell { count } => {
+                        if !state.host_capabilities().bell {
+                            return Err(ClientError::HostUnsupported(
+                                "terminal bells are unavailable for the selected host".to_owned(),
+                            ));
+                        }
                         if let Err(err) =
                             crate::terminal_effects::write_terminal_bells(&mut io::stdout(), count)
                         {
@@ -1746,6 +1927,11 @@ async fn run_client_loop(
                         }
                     }
                     ServerMessage::Clipboard { data } => {
+                        if !state.host_capabilities().clipboard {
+                            return Err(ClientError::HostUnsupported(
+                                "clipboard output is unavailable for the selected host".to_owned(),
+                            ));
+                        }
                         if forward_clipboard(&data) {
                             let (width, height) = state.reported_size;
                             let frame = state.shell.as_mut().and_then(|shell| {
@@ -1758,9 +1944,14 @@ async fn run_client_loop(
                                 state.present_frame(frame);
                             }
                         }
-                        let _ = io::stdout().flush();
+                        if state.host_capabilities().ansi_output {
+                            let _ = io::stdout().flush();
+                        }
                     }
                     ServerMessage::WindowTitle { title } => {
+                        if !state.host_capabilities().title {
+                            continue;
+                        }
                         let _ = crate::terminal_effects::write_window_title(
                             &mut io::stdout(),
                             title.as_deref(),
@@ -1780,6 +1971,11 @@ async fn run_client_loop(
                     } => {
                         state.endpoint_mouse_capture_requested = enabled;
                         state.endpoint_sgr_pixels_requested = sgr_pixels;
+                        if enabled && !state.host_capabilities().mouse {
+                            return Err(ClientError::HostUnsupported(
+                                "mouse capture is unavailable for the selected host".to_owned(),
+                            ));
+                        }
                         let enabled =
                             effective_mouse_capture(enabled, state.direct_mouse_capture_preference);
                         let next_sgr_pixels = effective_sgr_pixel_mouse(
@@ -1789,7 +1985,7 @@ async fn run_client_loop(
                         );
                         let mouse_mode_changed = enabled != state.mouse_capture_active
                             || next_sgr_pixels != host_sgr_pixels_active.load(Ordering::Acquire);
-                        if mouse_mode_changed {
+                        if mouse_mode_changed && state.host_capabilities().mouse {
                             #[cfg(windows)]
                             if enabled && windows_vti_input_backend_enabled() && is_ssh_session() {
                                 let _ = enable_windows_virtual_terminal_input();
@@ -1809,7 +2005,7 @@ async fn run_client_loop(
                         flags,
                         modify_other_keys_level,
                     } => {
-                        if state.attach_escape.is_some() {
+                        if state.attach_escape.is_some() && state.host_capabilities().ansi_output {
                             crate::terminal_modes::set_direct_host_keyboard_protocol(
                                 &mut io::stdout(),
                                 &mut state.direct_keyboard_protocol,
@@ -2074,7 +2270,9 @@ async fn run_client_loop(
     // Clean exit (Ctrl+C). Send Detach before closing.
     let detach = ClientMessage::Detach;
     let _ = write_to_server(&mut write_stream, &detach);
-    let _ = io::stdout().flush();
+    if state.host_capabilities().ansi_output {
+        let _ = io::stdout().flush();
+    }
 
     Ok(())
 }

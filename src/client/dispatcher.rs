@@ -13,6 +13,11 @@ pub(crate) fn integrated_client_event_to_presentation(
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<bool, ClientError> {
+    if !state.host_capabilities().input {
+        return Err(ClientError::HostUnsupported(
+            "client input is unavailable for the selected host".to_owned(),
+        ));
+    }
     let (outcome, frame) = {
         let shell = state
             .shell

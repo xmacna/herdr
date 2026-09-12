@@ -10,6 +10,24 @@ pub(super) enum ClientLoopEvent {
     DirectGraphicsResponse(direct_graphics::Response),
     #[cfg(windows)]
     StdinEvents(Vec<crate::protocol::ClientInputEvent>),
+    #[cfg(windows)]
+    NativeHostReady {
+        /// The validated handle is serialized across the GUI-thread channel. Reconstruct it
+        /// only at the presentation-sink boundary; the loop event itself remains Send.
+        hwnd: usize,
+        width: u32,
+        height: u32,
+    },
+    #[cfg(windows)]
+    NativeHostResize { width: u32, height: u32 },
+    #[cfg(windows)]
+    NativeHostFocus { focused: bool },
+    #[cfg(windows)]
+    NativeHostRedraw,
+    #[cfg(windows)]
+    NativeHostClose,
+    #[cfg(windows)]
+    NativeHostError(String),
     Resize(u16, u16, u32, u32, bool),
     TerminalUnavailable(io::Error),
     ServerMessage {

@@ -28,6 +28,7 @@ mod native {
                 Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
                 Imaging::*,
             },
+            Foundation::{HWND, RECT},
             System::{Com::*, ProcessStatus::*, Threading::GetCurrentProcess},
         },
     };
@@ -420,11 +421,66 @@ mod native {
         .map_err(fail)?;
         Ok(())
     }
+
+    pub(super) fn render_hwnd(
+        hwnd: HWND,
+        frame: &IntegratedPresentationFrame,
+        update_kind: &str,
+    ) -> Result<(), IntegratedPresentationError> {
+        let _ = update_kind;
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().map_err(fail)?; }
+        let _apartment = ComApartment;
+        let d2d: ID2D1Factory = unsafe {
+            D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).map_err(fail)?
+        };
+        let write: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).map_err(fail)? };
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0, dpiY: 96.0, usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+        };
+        let mut client_rect = RECT::default();
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client_rect)
+                .map_err(fail)?;
+        }
+        let client_width = client_rect.right.saturating_sub(client_rect.left) as u32;
+        let client_height = client_rect.bottom.saturating_sub(client_rect.top) as u32;
+        if client_width == 0 || client_height == 0 {
+            return Err(IntegratedPresentationError::new(
+                "native host client area is empty",
+            ));
+        }
+        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U { width: client_width, height: client_height },
+            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        };
+        let target = unsafe { d2d.CreateHwndRenderTarget(&props, &hwnd_props).map_err(fail)? };
+        let body = unsafe { write.CreateTextFormat(w!("Segoe UI"), None, DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0, w!("en-US")).map_err(fail)? };
+        let title = unsafe { write.CreateTextFormat(w!("Segoe UI"), None, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 15.0, w!("en-US")).map_err(fail)? };
+        unsafe {
+            target.BeginDraw();
+            target.Clear(Some(&D2D1_COLOR_F { r: 0.04, g: 0.06, b: 0.07, a: 1.0 }));
+            target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        }
+        paint_frame(&target, &body, &frame.frame, 12.0, 22.0)?;
+        paint_organization(&target, &title, &body, frame, 12.0, 22.0)?;
+        unsafe { target.EndDraw(None, None).map_err(fail)?; }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
 pub(crate) struct IntegratedGraphicsSink {
-    output: PathBuf,
+    output: Option<PathBuf>,
+    hwnd: Option<windows::Win32::Foundation::HWND>,
     frozen: bool,
     awaiting_full: bool,
     sequence: u64,
@@ -434,32 +490,49 @@ pub(crate) struct IntegratedGraphicsSink {
 impl IntegratedGraphicsSink {
     pub(crate) fn new(output: impl Into<PathBuf>) -> Self {
         Self {
-            output: output.into(),
+            output: Some(output.into()),
+            hwnd: None,
             frozen: false,
             awaiting_full: false,
             sequence: 0,
         }
     }
 
-    fn current_output(&self) -> PathBuf {
-        if self.sequence == 0 {
-            return self.output.clone();
+    pub(crate) fn new_hwnd(
+        hwnd: usize,
+    ) -> Result<Self, IntegratedPresentationError> {
+        if hwnd == 0 {
+            return Err(IntegratedPresentationError::new("native host supplied a null HWND"));
         }
-        let parent = self.output.parent().unwrap_or_else(|| Path::new("."));
-        let stem = self
-            .output
+        Ok(Self { output: None, hwnd: Some(windows::Win32::Foundation::HWND(hwnd as *mut core::ffi::c_void)), frozen: false, awaiting_full: false, sequence: 0 })
+    }
+
+    pub(crate) fn redraw(
+        &mut self,
+        frame: &IntegratedPresentationFrame,
+    ) -> Result<(), IntegratedPresentationError> {
+        let hwnd = self.hwnd.ok_or_else(|| IntegratedPresentationError::new("redraw requires an HWND sink"))?;
+        native::render_hwnd(hwnd, frame, "redraw")
+    }
+
+    fn current_output(&self) -> Result<PathBuf, IntegratedPresentationError> {
+        if self.sequence == 0 {
+            return self.output.clone().ok_or_else(|| IntegratedPresentationError::new("HWND sink has no bitmap output"));
+        }
+        let output = self.output.as_ref().ok_or_else(|| IntegratedPresentationError::new("HWND sink has no bitmap output"))?;
+        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+        let stem = output
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("integrated-presentation");
-        let extension = self
-            .output
+        let extension = output
             .extension()
             .and_then(|value| value.to_str())
             .unwrap_or("png");
-        parent.join(format!(
+        Ok(parent.join(format!(
             "{stem}-{sequence:04}.{extension}",
             sequence = self.sequence
-        ))
+        )))
     }
 }
 
@@ -486,8 +559,12 @@ impl IntegratedPresentationSink for IntegratedGraphicsSink {
                     ));
                 }
                 self.awaiting_full = false;
-                let output = self.current_output();
-                native::render(&output, frame, "full")
+                if let Some(hwnd) = self.hwnd {
+                    native::render_hwnd(hwnd, frame, "full")
+                } else {
+                    let output = self.current_output()?;
+                    native::render(&output, frame, "full")
+                }
             }
             IntegratedPresentationUpdate::Patch { frame, .. } => {
                 if self.frozen {
@@ -500,8 +577,12 @@ impl IntegratedPresentationSink for IntegratedGraphicsSink {
                         "patch received after Thaw; next update must be Full",
                     ));
                 }
-                let output = self.current_output();
-                native::render(&output, frame, "patch")
+                if let Some(hwnd) = self.hwnd {
+                    native::render_hwnd(hwnd, frame, "patch")
+                } else {
+                    let output = self.current_output()?;
+                    native::render(&output, frame, "patch")
+                }
             }
             IntegratedPresentationUpdate::Clear(_) => {
                 self.frozen = false;

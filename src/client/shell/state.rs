@@ -70,6 +70,8 @@ pub(crate) enum ClientShellKeybindingSource {
 }
 
 pub(crate) struct ClientShellConfig {
+    pub(super) host_mode: crate::client::host::HostMode,
+    pub(super) host_capabilities: crate::client::host::HostCapabilities,
     pub(super) sidebar_width: u16,
     pub(super) sidebar_min_width: u16,
     pub(super) sidebar_max_width: u16,
@@ -1033,6 +1035,26 @@ pub(super) struct WorkspaceEntry {
 }
 
 impl ClientShellState {
+    pub(crate) fn host_mode(&self) -> crate::client::host::HostMode {
+        self.config.host_mode
+    }
+
+    pub(crate) fn set_host_mode(&mut self, mode: crate::client::host::HostMode) {
+        self.config.host_mode = mode;
+        self.config.host_capabilities = mode.capabilities();
+    }
+
+    pub(crate) fn host_capabilities(&self) -> crate::client::host::HostCapabilities {
+        self.config.host_capabilities
+    }
+
+    pub(crate) fn set_host_capabilities(
+        &mut self,
+        capabilities: crate::client::host::HostCapabilities,
+    ) {
+        self.config.host_capabilities = capabilities;
+    }
+
     pub(crate) fn set_integrated_presentation_enabled(&mut self, enabled: bool) {
         self.integrated_presentation_enabled = enabled;
         if !enabled {

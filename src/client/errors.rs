@@ -16,6 +16,8 @@ pub enum ClientError {
     ConnectionLost(io::Error),
     /// The opt-in integrated presentation destination rejected a composed update.
     Presentation(String),
+    /// The selected host cannot perform a console-only client effect.
+    HostUnsupported(String),
     /// Protocol error (framing, deserialization).
     Protocol(protocol::FramingError),
 }
@@ -73,6 +75,9 @@ impl std::fmt::Display for ClientError {
             }
             ClientError::Presentation(message) => {
                 write!(f, "integrated presentation failed: {message}")
+            }
+            ClientError::HostUnsupported(message) => {
+                write!(f, "selected client host does not support this operation: {message}")
             }
             ClientError::Protocol(err) => write!(f, "protocol error: {err}"),
         }

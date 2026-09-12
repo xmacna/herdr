@@ -18,13 +18,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const COLS: u16 = 106;
-const ROWS: u16 = 60;
-const BOOT: &str = "integrated-fixture-boot";
+pub(super) const COLS: u16 = 106;
+pub(super) const ROWS: u16 = 60;
+pub(super) const BOOT: &str = "integrated-fixture-boot";
 const PASTE: &str = "P1-INTEGRATED-PASTE";
 
 #[derive(Clone)]
-struct RecordingTransport(Arc<Mutex<Vec<ClientMessage>>>);
+pub(super) struct RecordingTransport(pub(super) Arc<Mutex<Vec<ClientMessage>>>);
 impl EndpointTransport for RecordingTransport {
     fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
         self.0.lock().unwrap().push(message.clone());
@@ -32,7 +32,7 @@ impl EndpointTransport for RecordingTransport {
     }
 }
 #[derive(Default)]
-struct NoopPrefixInputSource {
+pub(super) struct NoopPrefixInputSource {
     switched: usize,
     restored: usize,
 }
@@ -136,7 +136,7 @@ impl IntegratedPresentationSink for EvidenceSink {
     }
 }
 
-fn snapshot(revision: u64, focus: &str) -> ClientShellSnapshot {
+pub(super) fn snapshot(revision: u64, focus: &str) -> ClientShellSnapshot {
     let people = [
         ("pane-1", "gerente", "tab-1"),
         ("pane-2", "worker", "tab-1"),
@@ -287,7 +287,7 @@ fn organization_config() -> crate::config::Config {
     .collect();
     config
 }
-fn surface(cols: u16, rows: u16, revision: u64, focus: &str) -> PaneSurfaceFrame {
+pub(super) fn surface(cols: u16, rows: u16, revision: u64, focus: &str) -> PaneSurfaceFrame {
     let left = cols / 2;
     let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
     buffer.set_style(
@@ -375,7 +375,7 @@ fn surface(cols: u16, rows: u16, revision: u64, focus: &str) -> PaneSurfaceFrame
         graphics: SurfaceGraphicsScene::default(),
     }
 }
-fn state(output_root: &std::path::Path, states: Arc<Mutex<Vec<serde_json::Value>>>) -> ClientState {
+pub(super) fn state(output_root: &std::path::Path, states: Arc<Mutex<Vec<serde_json::Value>>>) -> ClientState {
     let mut shell = crate::client::shell::ClientShellState::new(
         crate::client::shell::ClientShellConfig::from_config(&organization_config()),
     );
@@ -418,7 +418,7 @@ fn state(output_root: &std::path::Path, states: Arc<Mutex<Vec<serde_json::Value>
     state
 }
 
-fn key(code: ClientKeyCode, modifiers: u8) -> ClientInputEvent {
+pub(super) fn key(code: ClientKeyCode, modifiers: u8) -> ClientInputEvent {
     ClientInputEvent::Key {
         code,
         modifiers,

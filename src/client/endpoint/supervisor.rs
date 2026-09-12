@@ -330,6 +330,9 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
         ClientError::Presentation(message) => {
             std::io::Error::new(std::io::ErrorKind::Other, message)
         }
+        ClientError::HostUnsupported(message) => {
+            std::io::Error::new(std::io::ErrorKind::Unsupported, message)
+        }
     }
 }
 

@@ -60,6 +60,26 @@ impl Drop for ClientState {
 }
 
 impl ClientState {
+    pub(crate) fn host_mode(&self) -> crate::client::host::HostMode {
+        self.shell
+            .as_ref()
+            .map(shell::ClientShellState::host_mode)
+            .unwrap_or(crate::client::host::HostMode::Ansi)
+    }
+
+    pub(crate) fn host_capabilities(&self) -> crate::client::host::HostCapabilities {
+        self.shell
+            .as_ref()
+            .map(shell::ClientShellState::host_capabilities)
+            .unwrap_or_else(crate::client::host::HostCapabilities::ansi)
+    }
+
+    pub(crate) fn set_host_mode(&mut self, mode: crate::client::host::HostMode) {
+        if let Some(shell) = self.shell.as_mut() {
+            shell.set_host_mode(mode);
+        }
+    }
+
     pub(super) fn set_integrated_presentation_sink(
         &mut self,
         sink: Option<Box<dyn crate::client::IntegratedPresentationSink>>,
@@ -175,6 +195,9 @@ impl ClientState {
         if self.presentation_frozen || graphics.is_empty() || !self.kitty_graphics_enabled {
             return;
         }
+        if !self.host_capabilities().ansi_output {
+            return;
+        }
         let mut stdout = io::stdout();
         let _ = write_encoded_frame_with_graphics(&mut stdout, &[], graphics);
         let _ = stdout.flush();
@@ -184,6 +207,9 @@ impl ClientState {
         &mut self,
         patch: shell::ClientComposedSurfacePatch,
     ) -> io::Result<bool> {
+        if !self.host_capabilities().ansi_output {
+            return Ok(false);
+        }
         if self.integrated_presentation_sink.is_some() {
             // The semantic package is produced during full composition. Force the existing
             // repaint path while the optional destination is enabled rather than sending a
@@ -194,7 +220,8 @@ impl ClientState {
             crate::render_prof::event("client_surface_patch.fallback.repaint");
             return Ok(false);
         }
-        let rows = if self.draw_host_cursor {
+        let draw_host_cursor = self.draw_host_cursor && self.host_capabilities().cursor;
+        let rows = if draw_host_cursor {
             let Some(rows) = self
                 .blit_encoder
                 .patch_rows_with_drawn_cursor(&patch.rows, patch.cursor.as_ref())
@@ -209,7 +236,7 @@ impl ClientState {
         let encode_started = crate::render_prof::timer();
         let Some(encoded) =
             self.blit_encoder
-                .encode_patch(&rows, patch.cursor.clone(), self.draw_host_cursor)
+                .encode_patch(&rows, patch.cursor.clone(), draw_host_cursor)
         else {
             crate::render_prof::event("client_surface_patch.fallback.encode");
             return Ok(false);
@@ -273,15 +300,20 @@ impl ClientState {
         if self.presentation_frozen {
             return;
         }
+        let capabilities = self.host_capabilities();
         if integrated && self.integrated_presentation_sink.is_some() {
             self.present_integrated_full(&frame_data);
         }
-        let frame_data = if self.draw_host_cursor {
+        if !capabilities.ansi_output {
+            return;
+        }
+        let draw_host_cursor = self.draw_host_cursor && capabilities.cursor;
+        let frame_data = if draw_host_cursor {
             render_ansi::frame_with_drawn_cursor(frame_data)
         } else {
             frame_data
         };
-        let encoded = if self.draw_host_cursor {
+        let encoded = if draw_host_cursor {
             self.blit_encoder
                 .encode_with_suppressed_visible_cursor(&frame_data, self.repaint_pending)
         } else {

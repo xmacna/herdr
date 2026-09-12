@@ -10,6 +10,9 @@ pub(super) fn dispatch_client_shell_actions(
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
     let mut repaint = false;
+    let clipboard_allowed = shell
+        .as_ref()
+        .is_none_or(|shell| shell.host_capabilities().clipboard);
     for action in actions {
         match action {
             shell::ClientShellAction::Endpoint {
@@ -26,6 +29,11 @@ pub(super) fn dispatch_client_shell_actions(
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
+                if !clipboard_allowed {
+                    return Err(ClientError::HostUnsupported(
+                        "clipboard output is disabled in the native host".to_owned(),
+                    ));
+                }
                 crate::selection::write_osc52_bytes(&bytes);
             }
             shell::ClientShellAction::ActivateEndpoint {
@@ -94,6 +102,12 @@ pub(super) fn sync_client_shell_keyboard_report_all(
         return Ok(());
     };
     let desired = state.pane_keyboard_report_all || shell.host_keyboard_report_all_requested();
+    if !state.host_capabilities().keyboard_report {
+        // Native host input is delivered through its own message loop. Keep processing the
+        // shell/pane request, but do not emit the console-only keyboard-report sequence.
+        state.keyboard_report_all_active = false;
+        return Ok(());
+    }
     if desired == state.keyboard_report_all_active {
         return Ok(());
     }
@@ -110,14 +124,17 @@ pub(super) fn clear_endpoint_host_effects(
 ) {
     state.endpoint_mouse_capture_requested = false;
     state.endpoint_sgr_pixels_requested = false;
+    let capabilities = state.host_capabilities();
     let enabled = if state.shell.is_some() {
         state.shell_mouse_capture_preference
     } else {
         state.direct_mouse_capture_preference
     };
     let sgr_pixels = super::effective_sgr_pixel_mouse(enabled, false, state.pixel_geometry_exact);
-    if enabled != state.mouse_capture_active
+    if capabilities.mouse
+        && (enabled != state.mouse_capture_active
         || sgr_pixels != host_sgr_pixels_active.load(std::sync::atomic::Ordering::Acquire)
+        )
     {
         let _ = super::set_mouse_capture(enabled, sgr_pixels);
     }
@@ -127,13 +144,18 @@ pub(super) fn clear_endpoint_host_effects(
 
     state.pane_keyboard_report_all = false;
     let _ = sync_client_shell_keyboard_report_all(state);
-    let _ = crate::terminal_effects::write_window_title(&mut std::io::stdout(), None);
+    if capabilities.title {
+        let _ = crate::terminal_effects::write_window_title(&mut std::io::stdout(), None);
+    }
 }
 
 pub(super) fn apply_client_shell_input_source_changes(
     state: &mut ClientState,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
 ) {
+    if !state.host_capabilities().ansi_output {
+        return;
+    }
     let changes = state
         .shell
         .as_mut()
@@ -645,10 +667,10 @@ pub(super) fn finish_client_shell_input(
         }
     }
     #[cfg(not(windows))]
-    if outcome.query_host_appearance {
+    if outcome.query_host_appearance && state.host_capabilities().theme {
         query_host_terminal_appearance();
     }
-    if outcome.query_host_theme {
+    if outcome.query_host_theme && state.host_capabilities().theme {
         query_host_terminal_theme();
     }
     sync_client_shell_keyboard_report_all(state)?;
@@ -679,6 +701,9 @@ pub(super) fn finish_client_shell_input(
         && endpoints.active_surface_available();
     for request in outcome.requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
+            if !state.host_capabilities().theme {
+                continue;
+            }
             state.record_host_theme_update(update);
             if let Some(activation) = pending_activation.as_mut() {
                 if let Err(error) = activation.update_host_theme(update.clone(), endpoints) {
