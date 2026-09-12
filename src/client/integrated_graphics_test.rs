@@ -243,7 +243,7 @@ fn organization_config() -> crate::config::Config {
             "Reserva",
             "pane-4",
             "coordinator",
-            Some("argos"),
+            None, // Existing contract: reserved coordinator belongs to the common Argos group.
             true,
         ),
         (
