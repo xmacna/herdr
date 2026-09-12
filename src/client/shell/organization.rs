@@ -83,12 +83,12 @@ fn organization_status_text(status: AgentStatus, locale: OrganizationLocale) -> 
     match (locale, status) {
         (OrganizationLocale::Portuguese, AgentStatus::Working) => "Trabalhando",
         (OrganizationLocale::Portuguese, AgentStatus::Idle) => "Disponível",
-        (OrganizationLocale::Portuguese, AgentStatus::Done) => "Concluiu",
+        (OrganizationLocale::Portuguese, AgentStatus::Done) => "Novidade para ler",
         (OrganizationLocale::Portuguese, AgentStatus::Blocked) => "Precisa de atenção",
         (OrganizationLocale::Portuguese, AgentStatus::Unknown) => "Estado não confirmado",
         (OrganizationLocale::English, AgentStatus::Working) => "Working",
         (OrganizationLocale::English, AgentStatus::Idle) => "Available",
-        (OrganizationLocale::English, AgentStatus::Done) => "Done",
+        (OrganizationLocale::English, AgentStatus::Done) => "New update",
         (OrganizationLocale::English, AgentStatus::Blocked) => "Needs attention",
         (OrganizationLocale::English, AgentStatus::Unknown) => "State not confirmed",
     }
@@ -1011,7 +1011,7 @@ mod tests {
         assert!(meta("Equipe ativa").contains("Revisar a entrega"));
         assert!(meta("Equipe ativa").contains("Trabalhando"));
         assert!(meta("Equipe disponivel").contains("Disponível"));
-        assert!(meta("Equipe concluida").contains("Concluiu"));
+        assert!(meta("Equipe concluida").contains("Novidade para ler"));
         assert!(meta("Equipe atencao").contains("Precisa de atenção · ! 1"));
         assert!(meta("Reserva Fable").contains("Reserva · sem runtime"));
         assert!(!meta("Equipe atencao").contains("Aguardando"));
