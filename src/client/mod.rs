@@ -29,6 +29,8 @@ mod handshake;
 mod input;
 mod integrated_graphics;
 mod integrated_presentation;
+#[cfg(all(test, windows))]
+mod integrated_graphics_test;
 mod loop_config;
 mod notifications;
 mod shell;
