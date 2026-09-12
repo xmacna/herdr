@@ -218,5 +218,6 @@ mod input_domain;
 mod keybindings_settings;
 mod mobile;
 mod mouse_selection;
+mod p0_native_capability;
 mod popup_focus_projection;
 mod startup_overlays;
