@@ -1021,6 +1021,104 @@ fn organization_locale_selector_persists_across_client_instances() {
 }
 
 #[test]
+fn organization_reserve_keyboard_mouse_and_preferences_preserve_real_focus() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-organization-reserve-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut state = organization_navigation_state(1);
+    state.config.preferences_path = Some(path.clone());
+    state.config.organization.agents[0].reserved = true;
+    state.config.organization.agents[0].role = "coordinator".into();
+    let reserve_key = super::super::organization::reserve_key("local");
+    let frame = state.compose(106, 40).unwrap();
+    let toggle = state
+        .hits
+        .organization_toggles
+        .iter()
+        .find(|(_, key)| key == &reserve_key)
+        .unwrap()
+        .0;
+    assert_eq!(
+        frame.cells[usize::from(toggle.y) * usize::from(frame.width) + usize::from(toggle.x)]
+            .symbol,
+        "+"
+    );
+    assert!(!state.hits.agents.iter().any(|(_, pane)| pane == "pane_1"));
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    state.navigate_organization_key = Some(reserve_key.clone());
+    let expand = state.handle_input_bytes(b"\x1b[C");
+    assert!(
+        expand.actions.is_empty(),
+        "expansion never changes server focus"
+    );
+    state.compose(106, 40).unwrap();
+    assert!(state.hits.agents.iter().any(|(_, pane)| pane == "pane_1"));
+    assert!(state
+        .config
+        .organization_expanded_reserves
+        .contains(&reserve_key));
+    assert!(!state
+        .config
+        .organization_expanded_reserves
+        .contains(&super::super::organization::reserve_key("ssh:nyx")));
+    let preferences = crate::client::shell::preferences::load(&path).unwrap();
+    assert_eq!(
+        preferences.organization_expanded_reserves,
+        vec![reserve_key.clone()]
+    );
+    let mut reload_config = Config::default();
+    reload_config.ui.organization = state.config.organization.clone();
+    let mut reloaded = ClientShellState::new(
+        ClientShellConfig::from_config(&reload_config).with_preferences_path(path.clone()),
+    );
+    reloaded.set_snapshot(Box::new(state.snapshot.as_deref().cloned().unwrap()));
+    reloaded.set_pane_surface(surface());
+    reloaded.compose(106, 40).unwrap();
+    assert!(reloaded
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane)| pane == "pane_1"));
+    state.handle_input_bytes(b"\x1b[B");
+    let focus = state.handle_input_bytes(b"\r");
+    assert!(
+        matches!(focus.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
+        if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"))
+    );
+    state.compose(106, 40).unwrap();
+    let toggle = state
+        .hits
+        .organization_toggles
+        .iter()
+        .find(|(_, key)| key == &reserve_key)
+        .unwrap()
+        .0;
+    let collapse =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: toggle.x,
+            row: toggle.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(collapse.actions.is_empty());
+    assert!(!state
+        .config
+        .organization_expanded_reserves
+        .contains(&reserve_key));
+    assert!(crate::client::shell::preferences::load(&path)
+        .unwrap()
+        .organization_expanded_reserves
+        .is_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn organization_navigation_reveals_worker_and_focuses_the_selected_pane() {
     let mut state = organization_navigation_state(12);
     assert!(state.handle_input_bytes(&[0x02]).actions.is_empty());
@@ -1190,6 +1288,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     projected.panes.push(terminal_without_agent);
     for pane_id in [
         "pane_argos",
+        "pane_reserve",
         "pane_2",
         "pane_3",
         "pane_4",
@@ -1203,6 +1302,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     }
     projected.agents = vec![
         organization_demo_agent("pane_argos", "Argos", AgentStatus::Working),
+        organization_demo_agent("pane_reserve", "Argos Reserva", AgentStatus::Idle),
         organization_demo_agent("pane_1", "Gerente Produto", AgentStatus::Working),
         organization_demo_agent("pane_2", "Luna Interface", AgentStatus::Blocked),
         organization_demo_agent("pane_3", "Luna Build", AgentStatus::Done),
@@ -1287,6 +1387,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
             crate::config::OrganizationAgentConfig {
                 id: "argos-reserve".into(),
                 label: "Argos Reserva".into(),
+                pane_id: Some("pane_reserve".into()),
                 role: "coordinator".into(),
                 model: Some("gpt-6-astra".into()),
                 reserved: true,
@@ -1332,7 +1433,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        interface_block.contains("gpt-5.6-luna"),
+        !interface_block.contains("gpt-5.6-luna"),
         "interface block: {interface_block}"
     );
     assert!(
@@ -1341,9 +1442,9 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     );
     assert!(wide.contains("Luna Interface"), "wide frame: {wide}");
     assert!(wide.contains("Luna Build"), "wide frame: {wide}");
-    assert!(wide.contains("ARGOS"), "wide frame: {wide}");
-    assert!(wide.contains("Argos Reserva"), "wide frame: {wide}");
-    assert!(wide.contains("Reserva · sem runtime"), "wide frame: {wide}");
+    assert!(wide.contains("Argos"), "wide frame: {wide}");
+    assert!(!wide.contains("Argos Reserva"), "wide frame: {wide}");
+    assert!(wide.contains("1 na reserva"), "wide frame: {wide}");
     assert!(
         wide.contains("┌"),
         "wide frame must contain native box borders: {wide}"
@@ -1356,12 +1457,25 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
         .iter()
         .any(|(_, pane_id)| pane_id == "pane_argos"));
     assert!(wide.contains("Sem cadastro"), "wide frame: {wide}");
-    assert!(wide.contains("Reserva · sem runtime"), "wide frame: {wide}");
     assert!(state
         .hits
         .agents
         .iter()
         .any(|(_, pane_id)| pane_id == "pane_2"));
+
+    let reserve_key = super::super::organization::reserve_key("local");
+    state.set_organization_row_collapsed(&reserve_key, false);
+    let expanded_frame = state.compose(106, 60).expect("reserve expanded shell");
+    let expanded = organization_demo_frame_text(&expanded_frame);
+    let expanded_json = serde_json::to_vec(&expanded_frame).unwrap();
+    assert_eq!(expanded.matches("Argos Reserva").count(), 1);
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .any(|(_, pane)| pane == "pane_reserve"));
+    assert!(!expanded.contains("Reserva · sem sessão"));
+    state.set_organization_row_collapsed(&reserve_key, true);
 
     state.sidebar_width = 26;
     state.navigate_organization_key = None;
@@ -1370,7 +1484,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     let narrow_initial_json =
         serde_json::to_vec(&narrow_initial_frame).expect("narrow initial json");
     assert!(
-        narrow_initial.contains("ARGOS"),
+        narrow_initial.contains("Organizacao"),
         "narrow initial: {narrow_initial}"
     );
     assert!(
@@ -1388,7 +1502,7 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     let narrow_json = serde_json::to_vec(&narrow_frame).expect("narrow frame json");
     let narrow = organization_demo_frame_text(&narrow_frame);
     assert!(narrow.contains("Luna Interface"), "narrow frame: {narrow}");
-    assert!(narrow.contains("↑↓árv"), "narrow footer: {narrow}");
+    assert!(narrow.contains("↑↓det"), "narrow footer: {narrow}");
     assert!(narrow.contains("T>proj"), "narrow footer: {narrow}");
     assert!(narrow.contains("E>foc"), "narrow footer: {narrow}");
     assert!(narrow.contains("L"), "narrow locale selector: {narrow}");
@@ -1405,6 +1519,16 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
         std::fs::write(capture_dir.join("organization-wide.txt"), wide).expect("wide capture");
         std::fs::write(capture_dir.join("organization-wide.json"), wide_json)
             .expect("wide frame capture");
+        std::fs::write(
+            capture_dir.join("organization-reserve-expanded.txt"),
+            expanded,
+        )
+        .expect("reserve expanded capture");
+        std::fs::write(
+            capture_dir.join("organization-reserve-expanded.json"),
+            expanded_json,
+        )
+        .expect("reserve expanded frame capture");
         std::fs::write(capture_dir.join("organization-narrow.txt"), narrow)
             .expect("narrow capture");
         std::fs::write(capture_dir.join("organization-narrow.json"), narrow_json)

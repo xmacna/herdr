@@ -938,7 +938,7 @@ impl ClientShellState {
                 let selected = rows[current].1.organization.as_ref();
                 if let Some(selected) = selected {
                     if selected.expandable && !selected.collapsed {
-                        self.organization_collapsed.insert(selected.key.clone());
+                        self.set_organization_row_collapsed(&selected.key, true);
                     } else if let Some(parent) = selected.parent_key.as_ref() {
                         self.navigate_organization_key = Some(parent.clone());
                     }
@@ -951,7 +951,7 @@ impl ClientShellState {
                 let selected = rows[current].1.organization.as_ref();
                 if let Some(selected) = selected {
                     if selected.expandable && selected.collapsed {
-                        self.organization_collapsed.remove(&selected.key);
+                        self.set_organization_row_collapsed(&selected.key, false);
                         self.persist_chrome_preferences(outcome);
                     } else if selected.expandable {
                         self.navigate_organization_key = rows
@@ -991,9 +991,7 @@ impl ClientShellState {
                         });
                     }
                 } else if selected.expandable {
-                    if !self.organization_collapsed.remove(&selected.key) {
-                        self.organization_collapsed.insert(selected.key.clone());
-                    }
+                    self.set_organization_row_collapsed(&selected.key, !selected.collapsed);
                     self.persist_chrome_preferences(outcome);
                 }
                 outcome.repaint = true;

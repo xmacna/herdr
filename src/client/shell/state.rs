@@ -83,6 +83,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) organization: crate::config::OrganizationConfig,
     pub(super) organization_locale: crate::config::OrganizationLocale,
+    // Client-only presentation preference; never sent to the runtime.
+    pub(super) organization_expanded_reserves: HashSet<String>,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,
@@ -1017,6 +1019,11 @@ pub(super) struct WorkspaceEntry {
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
         let preferences = config.preferences.clone();
+        config.organization_expanded_reserves = preferences
+            .organization_expanded_reserves
+            .iter()
+            .cloned()
+            .collect();
         let local_config_diagnostic = config.startup_config_diagnostic.take();
         let overlay = config
             .startup_onboarding

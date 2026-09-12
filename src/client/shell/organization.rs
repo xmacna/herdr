@@ -9,6 +9,7 @@ use crate::protocol::{ClientShellAgent, ClientShellSnapshot};
 pub(super) enum OrganizationVisualKind {
     Root,
     Coordinator,
+    Reserve,
     Manager,
     Worker,
     Group,
@@ -45,6 +46,7 @@ impl OrganizationRow {
         match self.visual_kind {
             OrganizationVisualKind::Root => 3,
             OrganizationVisualKind::Coordinator
+            | OrganizationVisualKind::Reserve
             | OrganizationVisualKind::Group
             | OrganizationVisualKind::Manager
             | OrganizationVisualKind::Worker => content.saturating_add(1),
@@ -91,6 +93,13 @@ fn organization_status_text(status: AgentStatus, locale: OrganizationLocale) -> 
         (OrganizationLocale::English, AgentStatus::Done) => "Done",
         (OrganizationLocale::English, AgentStatus::Blocked) => "Needs attention",
         (OrganizationLocale::English, AgentStatus::Unknown) => "State not confirmed",
+    }
+}
+
+pub(super) fn navigation_hint(locale: OrganizationLocale) -> &'static str {
+    match locale {
+        OrganizationLocale::Portuguese => " Tab projetos · ↑↓ detalhes · ←→ recolher · Enter foco",
+        OrganizationLocale::English => " Tab projects · ↑↓ details · ←→ fold · Enter focus",
     }
 }
 
@@ -150,36 +159,46 @@ fn configured_meta(
     attention: usize,
     runtime_present: bool,
     locale: OrganizationLocale,
+    detailed: bool,
 ) -> String {
-    let lines = [
-        join_meta([
-            organization_role_text(&entry.role, locale),
-            entry.model.clone(),
-        ]),
+    let state = if !runtime_present && entry.reserved {
+        match locale {
+            OrganizationLocale::Portuguese => "Reserva · sem sessão".to_owned(),
+            OrganizationLocale::English => "Reserve · no session".to_owned(),
+        }
+    } else if !runtime_present {
+        match locale {
+            OrganizationLocale::Portuguese => "Cadastrado · sem sessão".to_owned(),
+            OrganizationLocale::English => "Registered · no session".to_owned(),
+        }
+    } else if attention > 0 {
+        format!(
+            "{} · ! {attention}",
+            organization_status_text(status, locale)
+        )
+    } else {
+        organization_status_text(status, locale).to_owned()
+    };
+    let mut lines = vec![
+        join_meta([Some(state), organization_role_text(&entry.role, locale)]),
         join_meta([entry.task.clone().or_else(|| entry.function.clone())]),
-        join_meta([
-            Some(if !runtime_present && entry.reserved {
-                match locale {
-                    OrganizationLocale::Portuguese => "Reserva · sem runtime".to_owned(),
-                    OrganizationLocale::English => "Reserve · no runtime".to_owned(),
-                }
-            } else if !runtime_present {
-                match locale {
-                    OrganizationLocale::Portuguese => "Cadastrado · sem runtime".to_owned(),
-                    OrganizationLocale::English => "Registered · no runtime".to_owned(),
-                }
-            } else if attention > 0 {
-                format!(
-                    "{} · ! {attention}",
-                    organization_status_text(status, locale)
-                )
-            } else {
-                organization_status_text(status, locale).to_owned()
-            }),
-            entry.owner_id.clone().map(|owner| format!("owner {owner}")),
-            entry.area.clone(),
-        ]),
     ];
+    if detailed {
+        lines.push(join_meta([entry.model.clone(), entry.area.clone()]));
+        lines.push(join_meta([
+            Some(format!("ID: {}", entry.id)),
+            entry.pane_id.clone(),
+        ]));
+        if let Some(owner) = &entry.owner_id {
+            lines.push(format!(
+                "{}: {owner}",
+                match locale {
+                    OrganizationLocale::Portuguese => "Responsável",
+                    OrganizationLocale::English => "Owner",
+                }
+            ));
+        }
+    }
     lines
         .into_iter()
         .filter(|line| !line.is_empty())
@@ -304,7 +323,14 @@ fn emit_configured(
             OrganizationLocale::English => "Registration pending · invalid registration".to_owned(),
         }
     } else {
-        configured_meta(entry, status, attention, runtime[index].is_some(), locale)
+        configured_meta(
+            entry,
+            runtime[index].map_or(status, |agent| agent.agent_status),
+            attention,
+            runtime[index].is_some(),
+            locale,
+            selected == Some(key.as_str()),
+        )
     };
     let visual_kind = visual_kind(entry, expandable);
     rows.push(OrganizationRow {
@@ -369,6 +395,7 @@ pub(super) fn rows(
         collapsed,
         selected,
         config.locale(),
+        false,
     )
 }
 
@@ -379,6 +406,7 @@ pub(super) fn rows_with_locale(
     collapsed: &HashSet<String>,
     selected: Option<&str>,
     locale: OrganizationLocale,
+    reserve_expanded: bool,
 ) -> Vec<OrganizationRow> {
     let entries = config
         .agents
@@ -589,60 +617,19 @@ pub(super) fn rows_with_locale(
         box_start: false,
         box_end: false,
     });
+    // Collapsing the workspace tree does not remove its coordination panel.
+    let mut coordinator_collapsed = collapsed.clone();
     if root_collapsed {
-        // Collapsing the virtual root only hides the manager/workers area. The
-        // coordination panel is a separate surface and must retain every
-        // explicitly registered coordinator, including reserved coordinators.
-        let mut coordinator_collapsed = collapsed.clone();
-        for index in 0..entries.len() {
-            if !invalid[index] && is_coordinator(&entries[index]) {
+        for (index, entry) in entries.iter().enumerate() {
+            if is_coordinator(entry) {
                 coordinator_collapsed.insert(keys[index].clone());
             }
         }
-        for index in configured_roots
-            .iter()
-            .copied()
-            .filter(|index| is_coordinator(&entries[*index]))
-        {
-            emit_configured(
-                index,
-                1,
-                Some(scope_root.clone()),
-                &children,
-                &entries,
-                &runtime,
-                &invalid,
-                &aggregate,
-                &coordinator_collapsed,
-                selected,
-                &mut rows,
-                &keys,
-                locale,
-            );
-        }
-        // `reserved_coordinators` has not been moved into the reserve group,
-        // so it remains visible here as an individual coordinator card.
-        for index in reserved_coordinators {
-            emit_configured(
-                index,
-                1,
-                Some(scope_root.clone()),
-                &children,
-                &entries,
-                &runtime,
-                &invalid,
-                &aggregate,
-                &coordinator_collapsed,
-                selected,
-                &mut rows,
-                &keys,
-                locale,
-            );
-        }
-        move_coordinators_to_panel(&mut rows);
-        return rows;
     }
     for index in configured_roots {
+        if root_collapsed && !is_coordinator(&entries[index]) {
+            continue;
+        }
         emit_configured(
             index,
             1,
@@ -652,33 +639,20 @@ pub(super) fn rows_with_locale(
             &runtime,
             &invalid,
             &aggregate,
-            collapsed,
+            &coordinator_collapsed,
             selected,
             &mut rows,
             &keys,
             locale,
         );
     }
-    for index in reserved_coordinators {
-        emit_configured(
-            index,
-            1,
-            Some(scope_root.clone()),
-            &children,
-            &entries,
-            &runtime,
-            &invalid,
-            &aggregate,
-            collapsed,
-            selected,
-            &mut rows,
-            &keys,
-            locale,
-        );
-    }
+    // One existing reserve, not a second placeholder coordinator. Its expansion
+    // is client presentation state and is independent of manager folding.
+    reserved_coordinators.extend(reserved_indices);
+    let reserved_indices = reserved_coordinators;
     if !reserved_indices.is_empty() {
         let key = scoped_group(endpoint_scope, "reserve");
-        let reserve_collapsed = collapsed.contains(&key);
+        let reserve_collapsed = !reserve_expanded;
         let status = reserved_indices
             .iter()
             .map(|index| aggregate[*index].0)
@@ -696,8 +670,8 @@ pub(super) fn rows_with_locale(
                 "{} {}{}",
                 reserved_indices.len(),
                 match locale {
-                    OrganizationLocale::Portuguese => "cadastros",
-                    OrganizationLocale::English => "registrations",
+                    OrganizationLocale::Portuguese => "na reserva",
+                    OrganizationLocale::English => "in reserve",
                 },
                 if attention > 0 {
                     format!(" · ! {attention}")
@@ -713,7 +687,7 @@ pub(super) fn rows_with_locale(
             collapsed: reserve_collapsed,
             selected: selected == Some(key.as_str()),
             invalid: false,
-            visual_kind: OrganizationVisualKind::Group,
+            visual_kind: OrganizationVisualKind::Reserve,
             box_start: false,
             box_end: false,
         });
@@ -736,6 +710,10 @@ pub(super) fn rows_with_locale(
                 );
             }
         }
+    }
+    if root_collapsed {
+        move_coordinators_to_panel(&mut rows);
+        return rows;
     }
     let mut orphan_rows = snapshot
         .agents
@@ -801,35 +779,54 @@ fn move_coordinators_to_panel(rows: &mut Vec<OrganizationRow>) {
     let Some(root) = rows.first().cloned() else {
         return;
     };
-    let mut coordinators = rows
-        .iter()
-        .skip(1)
-        .filter(|row| row.visual_kind == OrganizationVisualKind::Coordinator)
-        .cloned()
-        .collect::<Vec<_>>();
-    if coordinators.is_empty() {
-        if let Some(root) = rows.first_mut() {
-            root.box_end = true;
+    let mut coordination = Vec::new();
+    let mut rest = Vec::new();
+    let mut reserve_keys = HashSet::new();
+    for row in rows.iter().skip(1) {
+        let in_reserve = row.visual_kind == OrganizationVisualKind::Reserve
+            || row
+                .parent_key
+                .as_ref()
+                .is_some_and(|key| reserve_keys.contains(key));
+        if in_reserve {
+            reserve_keys.insert(row.key.clone());
         }
-        return;
+        if row.visual_kind == OrganizationVisualKind::Coordinator || in_reserve {
+            coordination.push(row.clone());
+        } else {
+            rest.push(row.clone());
+        }
     }
-    let mut rest = rows
-        .iter()
-        .skip(1)
-        .filter(|row| row.visual_kind != OrganizationVisualKind::Coordinator)
-        .cloned()
-        .collect::<Vec<_>>();
     let mut reordered = Vec::with_capacity(rows.len());
     reordered.push(root);
-    for row in &mut coordinators {
+    for row in &mut coordination {
         row.box_end = false;
     }
-    if let Some(last) = coordinators.last_mut() {
+    if let Some(last) = coordination.last_mut() {
         last.box_end = true;
+    } else {
+        reordered[0].box_end = true;
     }
-    reordered.append(&mut coordinators);
+    reordered.append(&mut coordination);
     reordered.append(&mut rest);
     *rows = reordered;
+}
+
+pub(super) fn is_reserve_key(key: &str) -> bool {
+    let Some((length, scoped)) = key
+        .strip_prefix("organization:v1:scope:")
+        .and_then(|value| value.split_once(':'))
+    else {
+        return false;
+    };
+    length
+        .parse::<usize>()
+        .ok()
+        .is_some_and(|length| scoped.get(length..) == Some(":group:virtual:7:reserve"))
+}
+
+pub(super) fn reserve_key(scope: &str) -> String {
+    scoped_group(scope, "reserve")
 }
 
 fn annotate_visual_boxes(rows: &mut [OrganizationRow]) {
@@ -948,9 +945,132 @@ mod tests {
         }
     }
 
+    fn expanded_rows(
+        snapshot: &ClientShellSnapshot,
+        config: &OrganizationConfig,
+        scope: &str,
+        collapsed: &HashSet<String>,
+        selected: Option<&str>,
+    ) -> Vec<OrganizationRow> {
+        rows_with_locale(
+            snapshot,
+            config,
+            scope,
+            collapsed,
+            selected,
+            config.locale(),
+            true,
+        )
+    }
+
+    #[test]
+    fn organization_reserve_defaults_closed_and_reveals_the_real_pane_once() {
+        let snapshot = test_snapshot(&[("reserve-pane", AgentStatus::Idle)]);
+        let config = config(vec![OrganizationAgentConfig {
+            id: "reserve-id".into(),
+            label: "Argos Reserva".into(),
+            pane_id: Some("reserve-pane".into()),
+            role: "coordinator".into(),
+            reserved: true,
+            ..Default::default()
+        }]);
+        let closed = rows(&snapshot, &config, "local", &HashSet::new(), None);
+        let group = closed
+            .iter()
+            .find(|row| row.visual_kind == OrganizationVisualKind::Reserve)
+            .unwrap();
+        assert!(group.collapsed && group.expandable && group.box_end);
+        assert!(group.pane_id.is_none());
+        assert!(!closed.iter().any(|row| row.pane_id.is_some()));
+        let open = expanded_rows(&snapshot, &config, "local", &HashSet::new(), None);
+        let real = open
+            .iter()
+            .filter(|row| row.pane_id.as_deref() == Some("reserve-pane"))
+            .collect::<Vec<_>>();
+        assert_eq!(real.len(), 1);
+        assert_eq!(real[0].parent_key.as_deref(), Some(group.key.as_str()));
+        assert!(real[0].meta.contains("Disponível"));
+        assert!(!real[0].meta.contains("sem sessão"));
+        assert!(real[0].box_end);
+        assert_ne!(reserve_key("local"), reserve_key("ssh:nyx"));
+        assert!(is_reserve_key(&reserve_key("ssh:nyx")));
+        assert!(!is_reserve_key(
+            "organization:v1:scope:5:local:agent:registration:23:group:virtual:7:reserve"
+        ));
+    }
+
+    #[test]
+    fn organization_parent_keeps_own_runtime_state_and_child_attention() {
+        let snapshot = test_snapshot(&[
+            ("manager", AgentStatus::Idle),
+            ("worker", AgentStatus::Blocked),
+        ]);
+        let config = config(vec![
+            OrganizationAgentConfig {
+                id: "manager".into(),
+                pane_id: Some("manager".into()),
+                role: "manager".into(),
+                ..Default::default()
+            },
+            OrganizationAgentConfig {
+                id: "worker".into(),
+                pane_id: Some("worker".into()),
+                parent_id: Some("manager".into()),
+                role: "worker".into(),
+                ..Default::default()
+            },
+        ]);
+        let rows = rows(&snapshot, &config, "local", &HashSet::new(), None);
+        let manager = rows
+            .iter()
+            .find(|row| row.pane_id.as_deref() == Some("manager"))
+            .unwrap();
+        assert!(manager.meta.starts_with("Disponível · ! 1"));
+        assert!(!manager.meta.contains("Precisa de atenção"));
+        assert_eq!(manager.attention, 1);
+        assert_eq!(
+            manager.status,
+            AgentStatus::Blocked,
+            "box still signals child attention"
+        );
+    }
+
+    #[test]
+    fn organization_selection_reveals_metadata_without_changing_identity_or_state() {
+        let snapshot = test_snapshot(&[("pane-worker", AgentStatus::Blocked)]);
+        let config = config(vec![OrganizationAgentConfig {
+            id: "worker".into(),
+            label: "Interface".into(),
+            pane_id: Some("pane-worker".into()),
+            role: "worker".into(),
+            model: Some("gpt-5.6-luna".into()),
+            function: Some("Revisar interface".into()),
+            ..Default::default()
+        }]);
+        let compact = rows(&snapshot, &config, "local", &HashSet::new(), None);
+        let compact = compact.iter().find(|row| row.label == "Interface").unwrap();
+        assert!(compact.meta.contains("Precisa de atenção"));
+        assert!(compact.meta.contains("Revisar interface"));
+        assert!(!compact.meta.contains("gpt-5.6-luna"));
+        assert!(!compact.meta.contains("ID:"));
+        let detailed = rows(
+            &snapshot,
+            &config,
+            "local",
+            &HashSet::new(),
+            Some(&compact.key),
+        );
+        let detailed = detailed.iter().find(|row| row.selected).unwrap();
+        assert!(detailed.meta.contains("gpt-5.6-luna"));
+        assert!(detailed.meta.contains("ID: worker · pane-worker"));
+        assert_eq!(detailed.pane_id, compact.pane_id);
+        assert_eq!(detailed.status, compact.status);
+        assert_eq!(detailed.attention, compact.attention);
+    }
+
     #[test]
     fn organization_rows_use_human_roles_states_and_explicit_registration_status() {
-        let rows = rows(
+        let rows = expanded_rows(
             &test_snapshot(&[
                 ("working", AgentStatus::Working),
                 ("idle", AgentStatus::Idle),
@@ -1007,13 +1127,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing organization row {label}"))
         };
         assert!(meta("Equipe ativa").contains("Gerente"));
-        assert!(meta("Equipe ativa").contains("gpt-5.6-luna"));
+        assert!(!meta("Equipe ativa").contains("gpt-5.6-luna"));
         assert!(meta("Equipe ativa").contains("Revisar a entrega"));
         assert!(meta("Equipe ativa").contains("Trabalhando"));
         assert!(meta("Equipe disponivel").contains("Disponível"));
         assert!(meta("Equipe concluida").contains("Concluiu"));
         assert!(meta("Equipe atencao").contains("Precisa de atenção · ! 1"));
-        assert!(meta("Reserva Fable").contains("Reserva · sem runtime"));
+        assert!(meta("Reserva Fable").contains("Reserva · sem sessão"));
         assert!(!meta("Equipe atencao").contains("Aguardando"));
     }
 
@@ -1071,7 +1191,7 @@ mod tests {
     }
     #[test]
     fn reserved_parent_keeps_descendant_under_reserve() {
-        let rows = rows(
+        let rows = expanded_rows(
             &test_snapshot(&[("w1:p1", AgentStatus::Working)]),
             &config(vec![
                 OrganizationAgentConfig {
@@ -1101,7 +1221,7 @@ mod tests {
 
     #[test]
     fn reserved_with_parent_is_emitted_once_and_nested_reserved_stays_nested() {
-        let rows = rows(
+        let rows = expanded_rows(
             &test_snapshot(&[("w1:p1", AgentStatus::Working)]),
             &config(vec![
                 OrganizationAgentConfig {
@@ -1150,7 +1270,7 @@ mod tests {
 
     #[test]
     fn synthetic_group_keys_do_not_collide_with_real_registration_ids() {
-        let rows = rows(
+        let rows = expanded_rows(
             &test_snapshot(&[]),
             &config(vec![
                 OrganizationAgentConfig {
@@ -1215,7 +1335,7 @@ mod tests {
     }
     #[test]
     fn reservation_alone_has_no_attention() {
-        let rows = rows(
+        let rows = expanded_rows(
             &test_snapshot(&[]),
             &config(vec![OrganizationAgentConfig {
                 id: "reserve".into(),
@@ -1228,7 +1348,7 @@ mod tests {
         );
         assert_eq!(
             rows.iter()
-                .find(|row| row.label == "Reserve")
+                .find(|row| row.visual_kind == OrganizationVisualKind::Reserve)
                 .map(|row| row.attention),
             Some(0)
         );
@@ -1360,7 +1480,8 @@ mod tests {
             .map(|row| row.label.as_str())
             .collect::<Vec<_>>();
         assert!(labels.contains(&"Argos active"));
-        assert!(labels.contains(&"Argos reserve"));
+        assert!(labels.contains(&"Reserva"));
+        assert!(!labels.contains(&"Argos reserve"));
         assert!(!labels.contains(&"Manager"));
     }
 

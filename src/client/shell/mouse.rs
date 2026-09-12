@@ -1920,9 +1920,13 @@ impl ClientShellState {
                     .iter()
                     .find(|(rect, _)| super::contains(*rect, point))
                 {
-                    if !self.organization_collapsed.remove(key) {
-                        self.organization_collapsed.insert(key.clone());
-                    }
+                    let key = key.clone();
+                    let collapse = if super::organization::is_reserve_key(&key) {
+                        self.config.organization_expanded_reserves.contains(&key)
+                    } else {
+                        !self.organization_collapsed.contains(&key)
+                    };
+                    self.set_organization_row_collapsed(&key, collapse);
                     self.persist_chrome_preferences(outcome);
                     outcome.repaint = true;
                     return;

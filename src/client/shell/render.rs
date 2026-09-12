@@ -111,13 +111,17 @@ pub(super) fn render_mode_bar(
                     }
                 };
                 if organization_selected {
+                    let details = match organization_locale {
+                        crate::config::OrganizationLocale::Portuguese => "detalhes",
+                        crate::config::OrganizationLocale::English => "details",
+                    };
                     if pane_area.width < 60 {
                         let (tree, fold, projects, focus) = match organization_locale {
                             crate::config::OrganizationLocale::Portuguese => {
-                                ("árv", "dob", "proj", "foc")
+                                ("det", "dob", "proj", "foc")
                             }
                             crate::config::OrganizationLocale::English => {
-                                ("tree", "fold", "proj", "foc")
+                                ("det", "fold", "proj", "foc")
                             }
                         };
                         segments.push((" NAV ".to_owned(), mode_style));
@@ -133,7 +137,7 @@ pub(super) fn render_mode_bar(
                             (" NAVIGATE ".to_owned(), mode_style),
                             (" esc ".to_owned(), base),
                             ("\u{2191}\u{2193}".to_owned(), key),
-                            (format!(" {tree} "), base),
+                            (format!(" {details} "), base),
                             ("\u{2190}\u{2192}".to_owned(), key),
                             (format!(" {fold} "), base),
                             ("tab".to_owned(), key),

@@ -491,6 +491,9 @@ pub(super) fn organization_rows(
         collapsed,
         selected,
         config.organization_locale,
+        config
+            .organization_expanded_reserves
+            .contains(&super::organization::reserve_key(endpoint_scope)),
     )
     .into_iter()
     .map(|organization| AgentRow {
@@ -529,6 +532,7 @@ fn render_organization_row(
         row.visual_kind,
         super::organization::OrganizationVisualKind::Root
             | super::organization::OrganizationVisualKind::Coordinator
+            | super::organization::OrganizationVisualKind::Reserve
             | super::organization::OrganizationVisualKind::Manager
             | super::organization::OrganizationVisualKind::Worker
             | super::organization::OrganizationVisualKind::Group
@@ -538,7 +542,13 @@ fn render_organization_row(
     } else {
         rect.x.saturating_add(row.depth)
     };
-    let marker = if row.expandable {
+    let marker = if row.visual_kind == super::organization::OrganizationVisualKind::Reserve {
+        if row.collapsed {
+            "+"
+        } else {
+            "−"
+        }
+    } else if row.expandable {
         if row.collapsed {
             "▸"
         } else {
@@ -575,13 +585,16 @@ fn render_organization_row(
     } else {
         status_color(row.status, palette)
     });
+    let prominent = row.selected
+        || focused
+        || row.visual_kind == super::organization::OrganizationVisualKind::Coordinator;
     let label_style = Style::default()
-        .fg(if row.selected || focused {
+        .fg(if prominent {
             palette.text
         } else {
             palette.subtext0
         })
-        .add_modifier(if row.selected || focused {
+        .add_modifier(if prominent {
             Modifier::BOLD
         } else {
             Modifier::empty()
@@ -593,7 +606,7 @@ fn render_organization_row(
                 rect,
                 '┌',
                 '┐',
-                &format!(" ARGOS · {} ", row.label),
+                &format!(" {} ", row.label),
                 label_style,
             );
             draw_box_text(
@@ -616,7 +629,8 @@ fn render_organization_row(
                 );
             }
         }
-        super::organization::OrganizationVisualKind::Coordinator => {
+        super::organization::OrganizationVisualKind::Coordinator
+        | super::organization::OrganizationVisualKind::Reserve => {
             draw_box_text(
                 buffer,
                 rect,

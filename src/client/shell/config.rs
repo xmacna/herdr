@@ -37,6 +37,22 @@ pub(super) fn merged_config_diagnostic(
 }
 
 impl ClientShellState {
+    pub(super) fn set_organization_row_collapsed(&mut self, key: &str, collapsed: bool) {
+        if super::organization::is_reserve_key(key) {
+            if collapsed {
+                self.config.organization_expanded_reserves.remove(key);
+            } else {
+                self.config
+                    .organization_expanded_reserves
+                    .insert(key.to_owned());
+            }
+        } else if collapsed {
+            self.organization_collapsed.insert(key.to_owned());
+        } else {
+            self.organization_collapsed.remove(key);
+        }
+    }
+
     pub(crate) fn tick_organization_registry(&mut self, now: std::time::Instant) -> bool {
         if self.organization_registry_last_check.is_some_and(|last| {
             now.saturating_duration_since(last) < ORGANIZATION_REGISTRY_CHECK_INTERVAL
@@ -168,6 +184,16 @@ impl ClientShellState {
             organization_locale: self
                 .organization_locale_manual
                 .then_some(self.config.organization_locale.code().to_owned()),
+            organization_expanded_reserves: {
+                let mut keys = self
+                    .config
+                    .organization_expanded_reserves
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                keys.sort();
+                keys
+            },
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.endpoint_error = Some(error);
@@ -250,6 +276,7 @@ impl ClientShellConfig {
             agent_panel_sort: config.ui.agent_panel_sort,
             organization: config.ui.organization.clone(),
             organization_locale: config.ui.organization.locale(),
+            organization_expanded_reserves: std::collections::HashSet::new(),
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
             toast_delivery: config.ui.toast.delivery,

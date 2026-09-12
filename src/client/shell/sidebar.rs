@@ -460,7 +460,7 @@ pub(crate) fn render_sidebar(
                 detail_area.x,
                 detail_area.bottom().saturating_sub(1),
                 detail_area.width,
-                " Tab projects · ↑↓ tree · ←→ fold · Enter focus",
+                super::organization::navigation_hint(config.organization_locale),
                 Style::default().fg(palette.overlay0),
             );
         }
