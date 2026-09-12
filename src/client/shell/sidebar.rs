@@ -453,6 +453,7 @@ pub(crate) fn render_sidebar(
             state.organization_collapsed,
             state.selected_organization_key,
             hits,
+            state.integrated_presentation.as_deref_mut(),
         );
         if organization_focus {
             put_text(

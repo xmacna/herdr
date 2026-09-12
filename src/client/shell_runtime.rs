@@ -730,5 +730,8 @@ pub(super) fn finish_client_shell_input(
             state.present_frozen_chrome(frame);
         }
     }
+    if let Some(error) = state.take_integrated_presentation_error() {
+        return Err(ClientError::Presentation(error));
+    }
     Ok(false)
 }

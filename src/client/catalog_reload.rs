@@ -143,6 +143,8 @@ mod tests {
             presentation_frozen: false,
             draw_host_cursor: false,
             detached_process_children: Vec::new(),
+            integrated_presentation_sink: None,
+            integrated_presentation_error: None,
             shell: Some(shell::ClientShellState::new(
                 shell::ClientShellConfig::from_config(&crate::config::Config::default()),
             )),

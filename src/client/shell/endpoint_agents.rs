@@ -9,6 +9,7 @@ pub(super) fn render_collapsed(
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
+    _integrated_presentation: Option<&mut crate::client::IntegratedPresentationCollector>,
 ) {
     let rows = agent_rows(endpoints, active_endpoint_id, config, &HashSet::new(), None);
     for (index, row) in rows
@@ -61,6 +62,7 @@ pub(super) fn render_expanded(
     organization_collapsed: &HashSet<String>,
     selected_organization_key: Option<&str>,
     hits: &mut ShellHitMap,
+    integrated_presentation: Option<&mut crate::client::IntegratedPresentationCollector>,
 ) {
     if !super::agent_sidebar::render_agent_panel_header(
         buffer,
@@ -101,14 +103,25 @@ pub(super) fn render_expanded(
         config,
         agent_scroll,
         hits,
+        integrated_presentation,
         |row| {
             row.agent
                 .organization
                 .as_ref()
                 .map_or(row.agent.rows.len(), |row| row.height())
         },
-        |buffer, rect, row, hits| {
+        |buffer, rect, row, hits, integrated| {
             super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, hits);
+            if let (Some(organization), Some(collector)) =
+                (row.agent.organization.as_ref(), integrated)
+            {
+                super::agent_sidebar::emit_integrated_organization_row(
+                    collector,
+                    rect,
+                    organization,
+                    row.agent.focused,
+                );
+            }
             if row.stale {
                 buffer.set_style(
                     rect,

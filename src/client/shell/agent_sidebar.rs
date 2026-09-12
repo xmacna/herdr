@@ -60,6 +60,7 @@ pub(super) fn render_agent_panel(
     organization_collapsed: &HashSet<String>,
     selected_organization_key: Option<&str>,
     hits: &mut ShellHitMap,
+    integrated_presentation: Option<&mut crate::client::IntegratedPresentationCollector>,
 ) {
     if !render_agent_panel_header(
         buffer,
@@ -107,16 +108,20 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
+        integrated_presentation,
         |row| {
             row.organization
                 .as_ref()
                 .map_or(row.rows.len(), |row| row.height())
         },
-        |buffer, rect, row, hits| {
+        |buffer, rect, row, hits, integrated| {
             if !row.pane_id.is_empty() {
                 hits.agents.push((rect, row.pane_id.clone()));
             }
             render_agent_row(buffer, rect, row, config, hits);
+            if let (Some(organization), Some(collector)) = (row.organization.as_ref(), integrated) {
+                emit_integrated_organization_row(collector, rect, organization, row.focused);
+            }
         },
     );
 }
@@ -256,8 +261,15 @@ pub(super) fn render_agent_list<T>(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
+    mut integrated_presentation: Option<&mut crate::client::IntegratedPresentationCollector>,
     row_lines: impl Fn(&T) -> usize,
-    mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
+    mut render_row: impl FnMut(
+        &mut Buffer,
+        Rect,
+        &T,
+        &mut ShellHitMap,
+        Option<&mut crate::client::IntegratedPresentationCollector>,
+    ),
 ) {
     let body = Rect::new(
         area.x,
@@ -314,7 +326,13 @@ pub(super) fn render_agent_list<T>(
             break;
         }
         let rect = Rect::new(body.x, y, content_width, height);
-        render_row(buffer, rect, row, hits);
+        render_row(
+            buffer,
+            rect,
+            row,
+            hits,
+            integrated_presentation.as_deref_mut(),
+        );
         y = y
             .saturating_add(height)
             .saturating_add(if index + 1 < rows.len() {
@@ -475,6 +493,79 @@ pub(super) fn render_agent_row(
             buffer,
         );
     }
+}
+
+pub(super) fn emit_integrated_organization_row(
+    collector: &mut crate::client::IntegratedPresentationCollector,
+    rect: Rect,
+    row: &super::organization::OrganizationRow,
+    focused: bool,
+) {
+    let kind = match row.visual_kind {
+        super::organization::OrganizationVisualKind::Root => {
+            crate::client::IntegratedOfficeNodeKind::Root
+        }
+        super::organization::OrganizationVisualKind::Coordinator => {
+            crate::client::IntegratedOfficeNodeKind::Coordinator
+        }
+        super::organization::OrganizationVisualKind::Manager => {
+            crate::client::IntegratedOfficeNodeKind::Manager
+        }
+        super::organization::OrganizationVisualKind::Worker => {
+            crate::client::IntegratedOfficeNodeKind::Worker
+        }
+        super::organization::OrganizationVisualKind::Group => {
+            crate::client::IntegratedOfficeNodeKind::Group
+        }
+        super::organization::OrganizationVisualKind::Unbound => {
+            crate::client::IntegratedOfficeNodeKind::Unbound
+        }
+    };
+    let node = crate::client::IntegratedOfficeNode {
+        key: row.key.clone(),
+        parent_key: row.parent_key.clone(),
+        kind,
+        name: row.label.clone(),
+        role: Some(
+            match kind {
+                crate::client::IntegratedOfficeNodeKind::Root => "root",
+                crate::client::IntegratedOfficeNodeKind::Coordinator => "coordinator",
+                crate::client::IntegratedOfficeNodeKind::Manager => "manager",
+                crate::client::IntegratedOfficeNodeKind::Worker => "worker",
+                crate::client::IntegratedOfficeNodeKind::Group => "group",
+                crate::client::IntegratedOfficeNodeKind::Unbound => "unbound",
+            }
+            .to_owned(),
+        ),
+        status: row.status.into(),
+        attention: row.attention,
+        pane_id: row.pane_id.clone(),
+        rect,
+        selected: row.selected,
+        focused,
+        focusable: !row.invalid && (row.pane_id.is_some() || row.expandable),
+        meta: row.meta.clone(),
+        box_start: row.box_start,
+        box_end: row.box_end,
+    };
+    let focusable = node.focusable;
+    let pane_id = node.pane_id.clone();
+    let key = node.key.clone();
+    collector
+        .organization
+        .push(if kind == crate::client::IntegratedOfficeNodeKind::Group {
+            crate::client::IntegratedOfficeOperation::Group(node)
+        } else {
+            crate::client::IntegratedOfficeOperation::Person(node)
+        });
+    collector
+        .organization_hits
+        .push(crate::client::IntegratedOrganizationHit {
+            key,
+            pane_id,
+            rect,
+            focusable,
+        });
 }
 
 pub(super) fn organization_rows(

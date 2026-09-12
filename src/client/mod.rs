@@ -19,6 +19,7 @@ mod clipboard_images;
 mod config_reload;
 #[cfg(unix)]
 mod direct_graphics;
+pub(crate) mod dispatcher;
 pub(crate) mod endpoint;
 mod endpoint_commands;
 mod errors;
@@ -26,6 +27,8 @@ mod events;
 mod frame_output;
 mod handshake;
 mod input;
+mod integrated_graphics;
+mod integrated_presentation;
 mod loop_config;
 mod notifications;
 mod shell;
@@ -45,6 +48,13 @@ use clipboard_forwarding::forward_clipboard;
 use config_reload::reload_local_client_config;
 use config_reload::{apply_reload, init_logging};
 use events::ClientLoopEvent;
+pub(crate) use integrated_graphics::IntegratedGraphicsSink;
+pub(crate) use integrated_presentation::{
+    IntegratedOfficeNode, IntegratedOfficeNodeKind, IntegratedOfficeOperation,
+    IntegratedOfficeStatus, IntegratedOrganizationHit, IntegratedPresentationCollector,
+    IntegratedPresentationError, IntegratedPresentationFrame, IntegratedPresentationIdentity,
+    IntegratedPresentationPayload, IntegratedPresentationSink, IntegratedPresentationUpdate,
+};
 use loop_config::ClientLoopConfig;
 use shell_runtime::*;
 use state::ClientState;
@@ -405,8 +415,14 @@ async fn run_client_loop(
         presentation_frozen: false,
         draw_host_cursor,
         detached_process_children: Vec::new(),
+        integrated_presentation_sink: None,
+        integrated_presentation_error: None,
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
+    #[cfg(windows)]
+    if let Some(output) = std::env::var_os("HERDR_INTEGRATED_PRESENTATION_OUTPUT") {
+        state.set_integrated_presentation_sink(Some(Box::new(IntegratedGraphicsSink::new(output))));
+    }
     let mut federated = endpoint_catalog.has_enabled_ssh();
     if let Some(shell) = state.shell.as_mut() {
         shell.set_graphics_cell_size(initial_cell_width_px, initial_cell_height_px);
@@ -570,6 +586,9 @@ async fn run_client_loop(
     #[cfg(windows)]
     let mut stdin_open = true;
     while !should_quit.load(Ordering::Acquire) {
+        if let Some(error) = state.take_integrated_presentation_error() {
+            return Err(ClientError::Presentation(error));
+        }
         if pending_activation.is_none() {
             if let Some(reload) = pending_catalog.take() {
                 match reload {
@@ -1041,19 +1060,9 @@ async fn run_client_loop(
                             continue;
                         }
                     }
-                    let (outcome, frame) = {
-                        let shell = state.shell.as_mut().expect("checked shell mode");
-                        let outcome = shell.handle_client_events(&events);
-                        let frame = outcome
-                            .repaint
-                            .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
-                            .flatten();
-                        (outcome, frame)
-                    };
-                    if finish_client_shell_input(
+                    if dispatcher::integrated_client_event_to_presentation(
                         &mut state,
-                        outcome,
-                        frame,
+                        &events,
                         &mut write_stream,
                         &mut pending_activation,
                         &mut endpoint_commands,

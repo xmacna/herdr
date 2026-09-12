@@ -198,6 +198,22 @@ pub(super) struct ShellHitMap {
     pub(super) release_notes_max_scroll: usize,
 }
 
+impl ShellHitMap {
+    /// Return the final compositor's known opaque overlay regions. These are collected after
+    /// overlay rendering and consumed by the optional semantic destination to preserve z-order.
+    pub(super) fn integrated_overlay_occlusions(&self) -> Vec<ratatui::layout::Rect> {
+        let mut regions = vec![self.notification_toast, self.help_popup];
+        // Hit rectangles are deliberately not included: buttons, rows, and search fields do not
+        // prove that the complete overlay background/border was painted by the common renderer.
+        // Such an overlay makes `office_operations_allowed` false, so the sink keeps the frame
+        // intact instead of guessing an occlusion rectangle.
+        regions.retain(|rect| !rect.is_empty());
+        regions.sort_by_key(|rect| (rect.y, rect.x, rect.width, rect.height));
+        regions.dedup();
+        regions
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct PaneHit {
     pub(super) rect: Rect,
@@ -928,6 +944,8 @@ pub(crate) struct ClientShellState {
     pub(super) last_tab_bar_width: Option<u16>,
     pub(super) last_composed_size: Option<(u16, u16)>,
     pub(super) hits: ShellHitMap,
+    pub(super) integrated_presentation_enabled: bool,
+    pub(super) integrated_presentation: Option<super::super::IntegratedPresentationPayload>,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
@@ -1015,6 +1033,19 @@ pub(super) struct WorkspaceEntry {
 }
 
 impl ClientShellState {
+    pub(crate) fn set_integrated_presentation_enabled(&mut self, enabled: bool) {
+        self.integrated_presentation_enabled = enabled;
+        if !enabled {
+            self.integrated_presentation = None;
+        }
+    }
+
+    pub(crate) fn take_integrated_presentation(
+        &mut self,
+    ) -> Option<super::super::IntegratedPresentationPayload> {
+        self.integrated_presentation.take()
+    }
+
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
         let preferences = config.preferences.clone();
         let local_config_diagnostic = config.startup_config_diagnostic.take();
@@ -1083,6 +1114,8 @@ impl ClientShellState {
             last_tab_bar_width: None,
             last_composed_size: None,
             hits: ShellHitMap::default(),
+            integrated_presentation_enabled: false,
+            integrated_presentation: None,
             endpoints: vec![local_endpoint()],
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),

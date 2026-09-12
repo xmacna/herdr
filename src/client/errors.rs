@@ -14,6 +14,8 @@ pub enum ClientError {
     ServerShutdown { reason: Option<String> },
     /// Lost connection to the server.
     ConnectionLost(io::Error),
+    /// The opt-in integrated presentation destination rejected a composed update.
+    Presentation(String),
     /// Protocol error (framing, deserialization).
     Protocol(protocol::FramingError),
 }
@@ -68,6 +70,9 @@ impl std::fmt::Display for ClientError {
                 } else {
                     write!(f, "lost connection to server: {err}")
                 }
+            }
+            ClientError::Presentation(message) => {
+                write!(f, "integrated presentation failed: {message}")
             }
             ClientError::Protocol(err) => write!(f, "protocol error: {err}"),
         }

@@ -128,6 +128,7 @@ pub(super) fn render_collapsed(
         state.active_endpoint_id,
         config,
         hits,
+        state.integrated_presentation.as_deref_mut(),
     );
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
         Rect::default()
@@ -408,6 +409,7 @@ pub(super) fn render_expanded(
             state.organization_collapsed,
             state.selected_organization_key,
             hits,
+            state.integrated_presentation.as_deref_mut(),
         );
         if organization_focus {
             put_text(

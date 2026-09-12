@@ -59,6 +59,7 @@ impl ClientShellState {
                 selected_organization_key: self.navigate_organization_key.as_deref(),
                 dragged_workspace_id: None,
                 workspace_drop_indicator_row: None,
+                integrated_presentation: None,
             },
             &mut self.hits,
         );
@@ -139,6 +140,9 @@ impl ClientShellState {
             _ => (None, None),
         };
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        let mut integrated_collector = self
+            .integrated_presentation_enabled
+            .then(crate::client::IntegratedPresentationCollector::default);
         self.hits = render::render_shell(
             &mut buffer,
             layout,
@@ -166,6 +170,7 @@ impl ClientShellState {
                     .flatten(),
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
+                integrated_presentation: integrated_collector.as_mut(),
             },
         );
         self.hits.panes = surface
@@ -624,6 +629,36 @@ impl ClientShellState {
             self.hits.popup = None;
         }
         self.compose_graphics(&mut frame, layout);
+        if let Some(collector) = integrated_collector {
+            let overlay_occlusions = self.hits.integrated_overlay_occlusions();
+            // A toast is a complete visual region, but it cannot certify that an unrelated modal
+            // was fully painted. Help is the one modal whose full rectangle is exported by the
+            // common renderer; menus and partial-action overlays must use the safe fallback.
+            let complete_coverage = match self.overlay.as_ref() {
+                None => true,
+                Some(crate::client::shell::ClientShellOverlay::Help(_)) => {
+                    !self.hits.help_popup.is_empty()
+                }
+                Some(_) => false,
+            };
+            self.integrated_presentation = Some(
+                collector
+                    .with_overlay_occlusions(overlay_occlusions, complete_coverage)
+                    .finish(crate::client::IntegratedPresentationIdentity {
+                        endpoint_id: self.active_endpoint_id.storage_key(),
+                        generation: self
+                            .endpoints
+                            .iter()
+                            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+                            .map_or(0, |endpoint| endpoint.generation),
+                        boot_id: snapshot.boot_id.clone(),
+                        projection_revision: snapshot.revision,
+                        surface_revision: surface.surface_revision,
+                    }),
+            );
+        } else {
+            self.integrated_presentation = None;
+        }
         Some(frame)
     }
 }

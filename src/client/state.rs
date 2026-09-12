@@ -40,6 +40,9 @@ pub(super) struct ClientState {
     pub(super) presentation_frozen: bool,
     pub(super) draw_host_cursor: bool,
     pub(super) detached_process_children: Vec<std::process::Child>,
+    pub(super) integrated_presentation_sink:
+        Option<Box<dyn crate::client::IntegratedPresentationSink>>,
+    pub(super) integrated_presentation_error: Option<String>,
     pub(super) shell: Option<shell::ClientShellState>,
 }
 
@@ -57,11 +60,50 @@ impl Drop for ClientState {
 }
 
 impl ClientState {
+    pub(super) fn set_integrated_presentation_sink(
+        &mut self,
+        sink: Option<Box<dyn crate::client::IntegratedPresentationSink>>,
+    ) {
+        let enabled = sink.is_some();
+        self.integrated_presentation_sink = sink;
+        if let Some(shell) = self.shell.as_mut() {
+            shell.set_integrated_presentation_enabled(enabled);
+        }
+        if !enabled {
+            self.integrated_presentation_error = None;
+        }
+    }
+
+    fn present_integrated_full(&mut self, frame_data: &FrameData) {
+        let Some(payload) = self
+            .shell
+            .as_mut()
+            .and_then(|shell| shell.take_integrated_presentation())
+        else {
+            return;
+        };
+        let Some(sink) = self.integrated_presentation_sink.as_mut() else {
+            return;
+        };
+        let frame = payload.with_frame(frame_data.clone());
+        if let Err(error) = sink.present(crate::client::IntegratedPresentationUpdate::Full(&frame))
+        {
+            self.integrated_presentation_error = Some(error.to_string());
+        }
+    }
+
+    pub(super) fn take_integrated_presentation_error(&mut self) -> Option<String> {
+        self.integrated_presentation_error.take()
+    }
+
     pub(super) fn request_repaint(&mut self) {
         self.repaint_pending = true;
     }
 
     pub(super) fn freeze_presentation(&mut self) {
+        if !self.presentation_frozen {
+            self.present_integrated_control(crate::client::IntegratedPresentationUpdate::Frozen);
+        }
         self.presentation_frozen = true;
     }
 
@@ -111,6 +153,9 @@ impl ClientState {
     }
 
     pub(super) fn unfreeze_presentation(&mut self) {
+        if self.presentation_frozen {
+            self.present_integrated_control(crate::client::IntegratedPresentationUpdate::Thaw);
+        }
         self.presentation_frozen = false;
         // A resize or metadata event may have happened while frozen. Force a full frame rather
         // than attempting to patch the old source frame.
@@ -122,7 +167,7 @@ impl ClientState {
     pub(super) fn present_frozen_chrome(&mut self, frame_data: FrameData) {
         let frozen = self.presentation_frozen;
         self.presentation_frozen = false;
-        self.present_frame(frame_data);
+        self.present_frame_internal(frame_data, !frozen);
         self.presentation_frozen = frozen;
     }
 
@@ -139,6 +184,12 @@ impl ClientState {
         &mut self,
         patch: shell::ClientComposedSurfacePatch,
     ) -> io::Result<bool> {
+        if self.integrated_presentation_sink.is_some() {
+            // The semantic package is produced during full composition. Force the existing
+            // repaint path while the optional destination is enabled rather than sending a
+            // patch without the matching organization revision.
+            return Ok(false);
+        }
         if self.presentation_frozen || self.repaint_pending {
             crate::render_prof::event("client_surface_patch.fallback.repaint");
             return Ok(false);
@@ -202,9 +253,28 @@ impl ClientState {
         }
     }
 
+    fn present_integrated_control(
+        &mut self,
+        update: crate::client::IntegratedPresentationUpdate<'_>,
+    ) {
+        let Some(sink) = self.integrated_presentation_sink.as_mut() else {
+            return;
+        };
+        if let Err(error) = sink.present(update) {
+            self.integrated_presentation_error = Some(error.to_string());
+        }
+    }
+
     pub(super) fn present_frame(&mut self, frame_data: FrameData) {
+        self.present_frame_internal(frame_data, true);
+    }
+
+    fn present_frame_internal(&mut self, frame_data: FrameData, integrated: bool) {
         if self.presentation_frozen {
             return;
+        }
+        if integrated && self.integrated_presentation_sink.is_some() {
+            self.present_integrated_full(&frame_data);
         }
         let frame_data = if self.draw_host_cursor {
             render_ansi::frame_with_drawn_cursor(frame_data)

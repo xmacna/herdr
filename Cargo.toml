@@ -52,6 +52,16 @@ portable-pty = { path = "vendor/portable-pty" }
 
 [target.'cfg(windows)'.dependencies]
 # UTF-16 SDDL input for interprocess security descriptors.
+windows = { version = "0.62.2", features = [
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 widestring = "1.2"
 wmi = { version = "0.18.4", default-features = false }
 windows-sys = { version = "0.61.2", features = [
