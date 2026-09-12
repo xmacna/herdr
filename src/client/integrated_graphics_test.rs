@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::client::dispatcher::integrated_client_event_to_presentation as dispatch;
-use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry, EndpointTransport};
+use crate::client::endpoint::{
+    ClientEndpointId, EndpointNegotiation, EndpointRegistry, EndpointTransport,
+};
 use crate::config::OrganizationAgentConfig;
 use crate::protocol::*;
 use crossterm::event::KeyModifiers;
@@ -378,7 +380,7 @@ fn state(output_root: &std::path::Path, states: Arc<Mutex<Vec<serde_json::Value>
         crate::client::shell::ClientShellConfig::from_config(&organization_config()),
     );
     shell.set_endpoint_snapshot_for_generation(
-        &endpoint::ClientEndpointId::Local,
+        &ClientEndpointId::Local,
         1,
         Box::new(snapshot(7, "pane-1")),
     );
@@ -453,7 +455,7 @@ fn integrated_client_event_to_presentation() {
     let mut ordinary =
         shell::ClientShellState::new(shell::ClientShellConfig::from_config(&organization_config()));
     ordinary.set_endpoint_snapshot_for_generation(
-        &endpoint::ClientEndpointId::Local,
+        &ClientEndpointId::Local,
         1,
         Box::new(snapshot(7, "pane-1")),
     );
@@ -559,7 +561,7 @@ fn integrated_client_event_to_presentation() {
         })
         .expect("right-focus effect through EndpointRegistry");
     let request: crate::api::schema::Request = serde_json::from_str(&selection).unwrap();
-    assert!(commands.accepts_response(&endpoint::ClientEndpointId::Local, 1, BOOT, &request.id));
+    assert!(commands.accepts_response(&ClientEndpointId::Local, 1, BOOT, &request.id));
     let crate::api::schema::Method::PaneFocusDirection(params) = &request.method else {
         panic!("focus request");
     };
@@ -604,7 +606,7 @@ fn integrated_client_event_to_presentation() {
     state.shell.as_mut().unwrap().set_pane_surface(next);
     install_client_shell_snapshot(
         &mut state,
-        &endpoint::ClientEndpointId::Local,
+        &ClientEndpointId::Local,
         Box::new(successor),
         false,
         &mut endpoints,
