@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "locale": "pt",
+  "root": "Sistema Argos — fixture",
+  "agents": [
+    {"id":"fixture-argos","display_name":"Argos","role":"coordinator","pane_id":"pane_1","model":"modelo sintético"},
+    {"id":"fixture-reserve","display_name":"Argos Reserva","role":"coordinator","pane_id":"pane_2","reserved":true,"model":"modelo sintético"},
+    {"id":"fixture-product","display_name":"Produto","role":"manager","pane_id":"pane_3","parent_id":"fixture-argos","model":"modelo sintético"},
+    {"id":"fixture-layout","display_name":"Interface","role":"worker","pane_id":"pane_4","parent_id":"fixture-product","model":"modelo sintético"},
+    {"id":"fixture-build","display_name":"Integração","role":"worker","pane_id":"pane_5","parent_id":"fixture-product","model":"modelo sintético"},
+    {"id":"fixture-content","display_name":"Conteúdo","role":"manager","pane_id":"pane_6","parent_id":"fixture-argos","model":"modelo sintético"},
+    {"id":"fixture-text","display_name":"Redação","role":"worker","pane_id":"pane_7","parent_id":"fixture-content","model":"modelo sintético"}
+  ]
+}

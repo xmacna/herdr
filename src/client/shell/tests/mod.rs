@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(windows)]
+mod p1_native_organization;
 use crate::api::schema::AgentStatus;
 use crate::protocol::{
     ClientShellAgent, ClientShellPane, ClientShellTab, ClientShellWorktree, PaneSurfacePane,

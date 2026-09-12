@@ -1,20 +1,17 @@
 //! Native, software-rendered WIC surface: no HWND, socket, PTY, or client loop.
 use std::{error::Error, fs::File, io::BufWriter, path::Path, time::Instant};
-use windows::{
-    core::w,
-    Win32::{
-        Graphics::{
-            Direct2D::{Common::*, *},
-            DirectWrite::*,
-            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-            Imaging::*,
-        },
-        System::{Com::*, ProcessStatus::*, Threading::GetCurrentProcess},
+use windows::Win32::{
+    Graphics::{
+        Direct2D::{Common::*, *},
+        DirectWrite::*,
+        Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        Imaging::*,
     },
+    System::{Com::*, ProcessStatus::*, Threading::GetCurrentProcess},
 };
 
-const WIDTH: u32 = 800;
-const HEIGHT: u32 = 400;
+#[cfg(not(test))]
+use windows::core::w;
 
 struct ComApartment;
 impl Drop for ComApartment {
@@ -24,10 +21,12 @@ impl Drop for ComApartment {
     }
 }
 
+#[cfg(not(test))]
 fn color(r: f32, g: f32, b: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r, g, b, a: 1.0 }
 }
 
+#[cfg(not(test))]
 fn rect(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
     D2D_RECT_F {
         left,
@@ -37,7 +36,12 @@ fn rect(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
     }
 }
 
-pub fn run(output: &Path) -> Result<(), Box<dyn Error>> {
+pub fn render(
+    output: &Path,
+    width: u32,
+    height: u32,
+    draw: impl FnOnce(&ID2D1RenderTarget, &IDWriteFactory) -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
     if !output.is_absolute() {
         return Err("output must be an absolute path, outside production state".into());
     }
@@ -51,8 +55,8 @@ pub fn run(output: &Path) -> Result<(), Box<dyn Error>> {
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
     let bitmap = unsafe {
         wic.CreateBitmap(
-            WIDTH,
-            HEIGHT,
+            width,
+            height,
             &GUID_WICPixelFormat32bppPBGRA,
             WICBitmapCacheOnLoad,
         )?
@@ -69,88 +73,25 @@ pub fn run(output: &Path) -> Result<(), Box<dyn Error>> {
         minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
     };
     let target = unsafe { d2d.CreateWicBitmapRenderTarget(&bitmap, &properties)? };
-    let ink = unsafe { target.CreateSolidColorBrush(&color(0.14, 0.18, 0.18), None)? };
-    let paper = unsafe { target.CreateSolidColorBrush(&color(0.99, 0.99, 0.97), None)? };
-    let shade = unsafe { target.CreateSolidColorBrush(&color(0.80, 0.82, 0.80), None)? };
-    let accent = unsafe { target.CreateSolidColorBrush(&color(0.22, 0.38, 0.34), None)? };
-    let title = unsafe {
-        write.CreateTextFormat(
-            w!("Segoe UI"),
-            None,
-            DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            32.0,
-            w!("pt-BR"),
-        )?
-    };
-    let body = unsafe {
-        write.CreateTextFormat(
-            w!("Segoe UI"),
-            None,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            18.0,
-            w!("pt-BR"),
-        )?
-    };
     let init_ms = started.elapsed().as_secs_f64() * 1000.0;
     let draw_started = Instant::now();
     unsafe {
         target.BeginDraw();
-        target.Clear(Some(&color(0.91, 0.92, 0.90)));
+        target.Clear(Some(&D2D1_COLOR_F {
+            r: 0.91,
+            g: 0.92,
+            b: 0.90,
+            a: 1.0,
+        }));
         target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        target.FillRoundedRectangle(
-            &D2D1_ROUNDED_RECT {
-                rect: rect(63.0, 67.0, 743.0, 343.0),
-                radiusX: 22.0,
-                radiusY: 22.0,
-            },
-            &shade,
-        );
-        target.FillRoundedRectangle(
-            &D2D1_ROUNDED_RECT {
-                rect: rect(60.0, 60.0, 740.0, 336.0),
-                radiusX: 22.0,
-                radiusY: 22.0,
-            },
-            &paper,
-        );
-        target.FillRoundedRectangle(
-            &D2D1_ROUNDED_RECT {
-                rect: rect(92.0, 95.0, 100.0, 151.0),
-                radiusX: 4.0,
-                radiusY: 4.0,
-            },
-            &accent,
-        );
-        target.DrawText(
-            &"Sistema Argos".encode_utf16().collect::<Vec<_>>(),
-            &title,
-            &rect(120.0, 99.0, 680.0, 150.0),
-            &ink,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
-            DWRITE_MEASURING_MODE_NATURAL,
-        );
-        target.DrawText(
-            &"Prova técnica fora de tela"
-                .encode_utf16()
-                .collect::<Vec<_>>(),
-            &body,
-            &rect(92.0, 179.0, 690.0, 219.0),
-            &ink,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
-            DWRITE_MEASURING_MODE_NATURAL,
-        );
-        target.DrawText(&"Direct2D + DirectWrite · card e texto nativos\nSem janela, sessão, input ou aceite visual.".encode_utf16().collect::<Vec<_>>(), &body, &rect(92.0, 235.0, 690.0, 312.0), &ink, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        draw(&target, &write)?;
         // Draw operations report failures here; do not export a failed surface.
         target.EndDraw(None, None)?;
     }
     let draw_ms = draw_started.elapsed().as_secs_f64() * 1000.0;
     let read_started = Instant::now();
-    let mut pixels = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
-    unsafe { bitmap.CopyPixels(std::ptr::null(), WIDTH * 4, &mut pixels)? };
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    unsafe { bitmap.CopyPixels(std::ptr::null(), width * 4, &mut pixels)? };
     // Clear is opaque across the entire surface, so PBGRA -> RGBA is lossless.
     if pixels.chunks_exact(4).any(|p| p[3] != 255) {
         return Err("unexpected non-opaque pixels; premultiplied data not exported".into());
@@ -173,7 +114,7 @@ pub fn run(output: &Path) -> Result<(), Box<dyn Error>> {
     let readback_ms = read_started.elapsed().as_secs_f64() * 1000.0;
     let encode_started = Instant::now();
     // PNG only encodes pixels produced by the native APIs; it draws nothing.
-    let mut encoder = png::Encoder::new(BufWriter::new(File::create(output)?), WIDTH, HEIGHT);
+    let mut encoder = png::Encoder::new(BufWriter::new(File::create(output)?), width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header()?;
@@ -194,7 +135,7 @@ pub fn run(output: &Path) -> Result<(), Box<dyn Error>> {
     let report = serde_json::json!({
         "api": "Direct2D + DirectWrite -> WIC bitmap; png crate only encodes",
         "render_target": "D2D1_RENDER_TARGET_TYPE_SOFTWARE",
-        "width": WIDTH, "height": HEIGHT, "dpi": 96,
+        "width": width, "height": height, "dpi": 96,
         "native_end_draw_succeeded": true, "opaque_pixels": true,
         "changed_pixels": changed_pixels, "dark_pixels": dark_pixels,
         "init_ms": init_ms, "draw_end_draw_ms": draw_ms,
@@ -211,4 +152,82 @@ pub fn run(output: &Path) -> Result<(), Box<dyn Error>> {
     )?;
     println!("{}", report);
     Ok(())
+}
+
+#[cfg(not(test))]
+pub fn run(output: &Path) -> Result<(), Box<dyn Error>> {
+    render(output, 800, 400, |target, write| {
+        let ink = unsafe { target.CreateSolidColorBrush(&color(0.14, 0.18, 0.18), None)? };
+        let paper = unsafe { target.CreateSolidColorBrush(&color(0.99, 0.99, 0.97), None)? };
+        let shade = unsafe { target.CreateSolidColorBrush(&color(0.80, 0.82, 0.80), None)? };
+        let accent = unsafe { target.CreateSolidColorBrush(&color(0.22, 0.38, 0.34), None)? };
+        let title = unsafe {
+            write.CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                32.0,
+                w!("pt-BR"),
+            )?
+        };
+        let body = unsafe {
+            write.CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                18.0,
+                w!("pt-BR"),
+            )?
+        };
+        unsafe {
+            target.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: rect(63.0, 67.0, 743.0, 343.0),
+                    radiusX: 22.0,
+                    radiusY: 22.0,
+                },
+                &shade,
+            );
+            target.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: rect(60.0, 60.0, 740.0, 336.0),
+                    radiusX: 22.0,
+                    radiusY: 22.0,
+                },
+                &paper,
+            );
+            target.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: rect(92.0, 95.0, 100.0, 151.0),
+                    radiusX: 4.0,
+                    radiusY: 4.0,
+                },
+                &accent,
+            );
+            target.DrawText(
+                &"Sistema Argos".encode_utf16().collect::<Vec<_>>(),
+                &title,
+                &rect(120.0, 99.0, 680.0, 150.0),
+                &ink,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            target.DrawText(
+                &"Prova técnica fora de tela"
+                    .encode_utf16()
+                    .collect::<Vec<_>>(),
+                &body,
+                &rect(92.0, 179.0, 690.0, 219.0),
+                &ink,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            target.DrawText(&"Direct2D + DirectWrite · card e texto nativos\nSem janela, sessão, input ou aceite visual.".encode_utf16().collect::<Vec<_>>(), &body, &rect(92.0, 235.0, 690.0, 312.0), &ink, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        }
+        Ok(())
+    })
 }

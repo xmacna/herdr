@@ -24,6 +24,9 @@ mod mouse;
 mod notification_policy;
 mod notifications;
 mod organization;
+// Experimental offscreen adapter only. The production ANSI client is unchanged.
+#[cfg(all(test, windows))]
+mod native_scene_probe;
 mod overlay_input;
 mod preferences;
 mod render;

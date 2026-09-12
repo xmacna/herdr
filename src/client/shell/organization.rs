@@ -79,7 +79,10 @@ fn status_max(left: AgentStatus, right: AgentStatus) -> AgentStatus {
     }
 }
 
-fn organization_status_text(status: AgentStatus, locale: OrganizationLocale) -> &'static str {
+pub(super) fn organization_status_text(
+    status: AgentStatus,
+    locale: OrganizationLocale,
+) -> &'static str {
     match (locale, status) {
         (OrganizationLocale::Portuguese, AgentStatus::Working) => "Trabalhando",
         (OrganizationLocale::Portuguese, AgentStatus::Idle) => "Disponível",
