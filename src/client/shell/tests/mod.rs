@@ -223,3 +223,6 @@ mod mouse_selection;
 mod p0_native_capability;
 mod popup_focus_projection;
 mod startup_overlays;
+
+#[cfg(windows)]
+mod p1_live_readonly;
