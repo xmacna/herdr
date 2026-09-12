@@ -700,6 +700,7 @@ dependencies = [
  "unicode-width",
  "widestring",
  "windows",
+ "windows-numerics",
  "windows-sys",
  "wmi",
 ]

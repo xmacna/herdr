@@ -26,7 +26,9 @@ pub(super) struct Scene {
     pub(super) reserve_keys: Vec<String>,
     pub(super) reserve_open: bool,
     pub(super) toggle: Bounds,
-    pub(super) surface: PaneSurfaceFrame,
+    #[cfg(test)]
+    pub(super) surface: Option<PaneSurfaceFrame>,
+    pub(super) frame: crate::protocol::FrameData,
     pub(super) selected_pane: String,
     pub(super) selected_label: String,
     pub(super) height: u32,
@@ -99,6 +101,56 @@ pub(super) fn project(
     {
         return Err("surface cell geometry mismatch".into());
     }
+    project_rows(
+        snapshot,
+        config,
+        surface.frame.clone(),
+        rows,
+        selected_key,
+        reserve_open,
+        Some(surface.clone()),
+    )
+}
+
+pub(super) fn project_observed(
+    snapshot: &ClientShellSnapshot,
+    config: &OrganizationConfig,
+    frame: crate::protocol::FrameData,
+    selected_key: &str,
+    reserve_open: bool,
+) -> Result<Scene, String> {
+    let rows = organization::rows(
+        snapshot,
+        config,
+        "local",
+        &HashSet::new(),
+        Some(selected_key),
+    );
+    project_rows(
+        snapshot,
+        config,
+        frame,
+        rows,
+        selected_key,
+        reserve_open,
+        None,
+    )
+}
+
+fn project_rows(
+    snapshot: &ClientShellSnapshot,
+    config: &OrganizationConfig,
+    frame: crate::protocol::FrameData,
+    rows: Vec<OrganizationRow>,
+    selected_key: &str,
+    reserve_open: bool,
+    _source: Option<PaneSurfaceFrame>,
+) -> Result<Scene, String> {
+    let selected = rows
+        .iter()
+        .find(|r| r.key == selected_key && !r.invalid)
+        .ok_or("unknown or invalid selection")?;
+    let selected_pane = selected.pane_id.clone().ok_or("unbound selection")?;
     let reserved = |r: &OrganizationRow| {
         config
             .agents
@@ -118,18 +170,16 @@ pub(super) fn project(
             .map(|a| a.agent_status)
             .unwrap_or(AgentStatus::Unknown);
         let personal = organization::organization_status_text(own_status, config.locale());
-        let aggregate = organization::organization_status_text(row.status, config.locale());
-        let status_label = if row.visual_kind == Kind::Worker {
-            row.meta.clone()
+        let function = config
+            .agents
+            .iter()
+            .find(|entry| entry.pane_id == row.pane_id)
+            .and_then(|entry| entry.function.as_deref())
+            .unwrap_or("");
+        let status_label = if function.is_empty() {
+            personal.to_owned()
         } else {
-            match config.locale() {
-                crate::config::OrganizationLocale::Portuguese => {
-                    format!("Estado: {personal}\nEquipe: {aggregate}")
-                }
-                crate::config::OrganizationLocale::English => {
-                    format!("State: {personal}\nTeam: {aggregate}")
-                }
-            }
+            format!("{personal}\n{function}")
         };
         Card {
             row: row.clone(),
@@ -183,7 +233,9 @@ pub(super) fn project(
         reserve_keys,
         reserve_open,
         toggle: Bounds(333.0, 90.0, 412.0, 124.0),
-        surface: surface.clone(),
+        #[cfg(test)]
+        surface: _source,
+        frame,
         selected_pane,
         selected_label: selected.label.clone(),
         height: (y + 54.0).max(800.0) as u32,

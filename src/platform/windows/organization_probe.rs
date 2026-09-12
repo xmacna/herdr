@@ -57,7 +57,7 @@ fn panel(target: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, b: Bounds, ra
 pub(in crate::client::shell) fn render(scene: &Scene, output: &Path) -> Result<(), Box<dyn Error>> {
     // Wire colors use the 0x02_RR_GG_BB tag, not an alpha byte.
     // This first grid adapter supports the fixture subset, not every VT feature.
-    let frame = &scene.surface.frame;
+    let frame = &scene.frame;
     if frame.width > 78
         || frame.height > 25
         || !frame.graphics.is_empty()

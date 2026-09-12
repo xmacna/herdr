@@ -118,7 +118,8 @@ fn p1_native_organization_preserves_identity_surface_and_reserve() {
     let closed = scene::project(&snap, &config.ui.organization, &surface, &selected, false)
         .expect("project real model");
     assert_eq!(
-        closed.surface, original_surface,
+        closed.surface.as_ref(),
+        Some(&original_surface),
         "no terminal text or cell filtering"
     );
     assert_eq!(closed.cards.len(), 6);
@@ -132,9 +133,7 @@ fn p1_native_organization_preserves_identity_surface_and_reserve() {
         manager.row.status, manager.own_status,
         "team aggregate is distinct from personal state"
     );
-    assert!(manager
-        .status_label
-        .starts_with("Estado: Disponível\nEquipe:"));
+    assert!(manager.status_label.starts_with("Disponível"));
     assert_eq!(closed.reserve_keys, vec![reserve_key.clone()]);
     assert!(!closed.cards.iter().any(|c| c.row.key == reserve_key));
     assert_eq!(closed.hit(360.0, 108.0), Some(Hit::ToggleReserve));
@@ -187,7 +186,7 @@ fn p1_native_organization_preserves_identity_surface_and_reserve() {
         .cards
         .iter()
         .any(|c| c.row.key == reserve_key && c.row.selected));
-    assert_eq!(opened.surface.frame, original_surface.frame);
+    assert_eq!(opened.frame, original_surface.frame);
     assert!(closed
         .cards
         .iter()

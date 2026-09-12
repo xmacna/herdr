@@ -2070,3 +2070,6 @@ async fn run_client_loop(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(windows, feature = "native-demo"))]
+pub(crate) use shell::native_host::run as run_native_demo;

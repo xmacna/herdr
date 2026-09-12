@@ -4951,3 +4951,70 @@ mod tests {
         ));
     }
 }
+
+#[cfg(all(windows, any(test, feature = "native-demo")))]
+pub(crate) fn render_observed_ansi(
+    frame: &crate::protocol::TerminalFrame,
+) -> std::io::Result<crate::protocol::FrameData> {
+    if !frame.full
+        || frame.width == 0
+        || frame.height == 0
+        || u32::from(frame.width) * u32::from(frame.height) > 262144
+    {
+        return Err(std::io::Error::other(
+            "bounded full terminal frame required",
+        ));
+    }
+    let terminal = crate::ghostty::Terminal::new(frame.width, frame.height, 0)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let (sender, _unused_receiver) = tokio::sync::mpsc::channel(1);
+    let pane = GhosttyPaneTerminal::new(terminal, sender)?;
+    // Only Ghostty's parser receives bytes. Its replies/OSC side effects stay in local memory.
+    pane.core
+        .lock()
+        .map_err(|_| std::io::Error::other("terminal lock"))?
+        .terminal
+        .write(&frame.bytes);
+    let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(
+        frame.width,
+        frame.height,
+    ))
+    .expect("infallible memory backend");
+    canvas
+        .draw(|f| {
+            pane.render(
+                f,
+                ratatui::layout::Rect::new(0, 0, frame.width, frame.height),
+                true,
+            )
+        })
+        .expect("infallible memory backend");
+    let mut buffer = canvas.backend().buffer().clone();
+    if let Ok(core) = pane.core.lock() {
+        if let Ok(colors) = core.render_state.colors() {
+            for cell in &mut buffer.content {
+                if cell.fg == ratatui::style::Color::Reset {
+                    cell.fg = ratatui::style::Color::Rgb(
+                        colors.foreground.r,
+                        colors.foreground.g,
+                        colors.foreground.b,
+                    );
+                }
+                if cell.bg == ratatui::style::Color::Reset {
+                    cell.bg = ratatui::style::Color::Rgb(
+                        colors.background.r,
+                        colors.background.g,
+                        colors.background.b,
+                    );
+                }
+            }
+        }
+    }
+    let cursor = pane.cursor_state().map(|c| crate::protocol::CursorState {
+        x: c.x,
+        y: c.y,
+        visible: c.visible,
+        shape: c.shape,
+    });
+    Ok(crate::protocol::FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &[]))
+}

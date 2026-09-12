@@ -491,6 +491,10 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    #[cfg(all(windows, feature = "native-demo"))]
+    if raw_args.get(1).is_some_and(|a| a == "native-demo") {
+        return client::run_native_demo(&raw_args[2..]).map_err(|e| io::Error::other(e.to_string()));
+    }
     let args = match session::configure_from_args(&raw_args) {
         Ok(args) => args,
         Err(err) => {

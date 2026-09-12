@@ -25,8 +25,14 @@ mod notification_policy;
 mod notifications;
 mod organization;
 // Experimental offscreen adapter only. The production ANSI client is unchanged.
-#[cfg(all(test, windows))]
+#[cfg(all(windows, any(test, feature = "native-demo")))]
 mod native_scene_probe;
+#[cfg(all(windows, any(test, feature = "native-demo")))]
+mod native_observer;
+#[cfg(all(windows, feature = "native-demo"))]
+pub(crate) mod native_host;
+#[cfg(all(windows, feature = "native-demo"))]
+mod native_input;
 mod overlay_input;
 mod preferences;
 mod render;
