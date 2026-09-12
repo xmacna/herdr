@@ -350,7 +350,7 @@ impl NativeHostSession {
         };
         let post_error = if !join.is_finished() {
             let result = match self.hwnd() {
-                Some(hwnd) => unsafe { PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)) }
+                Some(hwnd) => unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }
                     .map_err(platform_error),
                 None => Err(platform_error("native host has no window")),
             };
@@ -409,7 +409,7 @@ where
                 .send(event)
                 .map_err(platform_error)
                 .and_then(|()| {
-                    unsafe { PostMessageW(hwnd, WAKE, WPARAM(0), LPARAM(0)) }
+                    unsafe { PostMessageW(Some(hwnd), WAKE, WPARAM(0), LPARAM(0)) }
                         .map_err(platform_error)
                 });
             if let Err(error) = result {
@@ -438,7 +438,7 @@ where
         match message {
             WAKE => LRESULT(0),
             WM_PAINT => {
-                let valid = unsafe { ValidateRect(hwnd, None) }
+                let valid = unsafe { ValidateRect(Some(hwnd), None) }
                     .ok()
                     .map_err(platform_error);
                 if let Some(context) = context {
@@ -527,7 +527,7 @@ where
         ..Default::default()
     };
     if unsafe { RegisterClassExW(&definition) } == 0 {
-        return Err(platform_error(windows::core::Error::from_win32()));
+        return Err(platform_error(windows::core::Error::from_thread()));
     }
     let _class = Class(instance);
     let (events_tx, events_rx) = mpsc::channel();
@@ -579,7 +579,7 @@ where
         }
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) }.0;
         if result == -1 {
-            return Err(platform_error(windows::core::Error::from_win32()));
+            return Err(platform_error(windows::core::Error::from_thread()));
         }
         if result == 0 {
             while let Ok(event) = events_rx.try_recv() {
