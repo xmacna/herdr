@@ -122,7 +122,13 @@ impl ClientShellState {
         }
         let snapshot_identity = self
             .integrated_presentation_enabled
-            .then(|| (snapshot.boot_id.clone(), snapshot.revision));
+            .then(|| {
+                (
+                    snapshot.boot_id.clone(),
+                    snapshot.revision,
+                    surface.surface_revision,
+                )
+            });
         let layout = self.layout(cols, rows);
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
@@ -633,7 +639,7 @@ impl ClientShellState {
         }
         self.compose_graphics(&mut frame, layout);
         if let Some(collector) = integrated_collector {
-            let (snapshot_boot_id, snapshot_revision) =
+            let (snapshot_boot_id, snapshot_revision, surface_revision) =
                 snapshot_identity.expect("integrated collector requires snapshot identity");
             let overlay_occlusions = self.hits.integrated_overlay_occlusions();
             // A toast is a complete visual region, but it cannot certify that an unrelated modal
@@ -659,7 +665,7 @@ impl ClientShellState {
                             .unwrap_or_default(),
                         boot_id: snapshot_boot_id,
                         projection_revision: snapshot_revision,
-                        surface_revision: surface.surface_revision,
+                        surface_revision,
                     }),
             );
         } else {
