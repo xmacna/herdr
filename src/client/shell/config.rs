@@ -78,8 +78,15 @@ impl ClientShellState {
             self.clear_organization_registry_error();
             return;
         };
-        let path = std::path::Path::new(registry_path);
-        let metadata = match std::fs::metadata(path) {
+        // The registry belongs to this client's config, not the shell's cwd.
+        // Path::join preserves an explicitly absolute registry path.
+        let path = self
+            .config
+            .local_config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(registry_path);
+        let metadata = match std::fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
                 self.organization_registry_observed_fingerprint = None;
@@ -95,7 +102,7 @@ impl ClientShellState {
             return;
         }
         self.organization_registry_observed_fingerprint = Some(fingerprint);
-        let content = match std::fs::read_to_string(path) {
+        let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(error) => {
                 self.set_organization_registry_error(format!(
@@ -676,6 +683,61 @@ mod tests {
             shell.keybinds.prefix,
             (KeyCode::Char('x'), KeyModifiers::CONTROL)
         );
+    }
+
+    #[test]
+    fn organization_registry_relative_path_uses_local_config_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-org-relative-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let filename = format!("registry-{}.json", std::process::id());
+        let registry = root.join(&filename);
+        let config_file = root.join("config.toml");
+        std::fs::write(&config_file, "# isolated config location").unwrap();
+        std::fs::write(&registry,
+            r#"{"schema_version":1,"agents":[{"id":"manager","role":"manager","pane_id":"pane-manager"},{"id":"worker","role":"worker","parent_id":"manager","pane_id":"pane-worker"}]}"#,
+        ).unwrap();
+        assert!(
+            !std::path::Path::new(&filename).exists(),
+            "fixture is not in process cwd"
+        );
+        let mut config = Config::default();
+        config.ui.organization.enabled = true;
+        config.ui.organization.registry_path = Some(filename);
+        let mut shell_config = ClientShellConfig::from_config(&config);
+        shell_config.local_config_path = config_file.clone();
+        let mut state = ClientShellState::new(shell_config);
+        assert!(state.endpoint_error.is_none(), "{:?}", state.endpoint_error);
+        assert_eq!(state.config.organization.agents.len(), 2);
+        assert_eq!(
+            state.config.organization.agents[1].parent_id.as_deref(),
+            Some("manager")
+        );
+        assert_eq!(
+            state.config.organization.agents[1].pane_id.as_deref(),
+            Some("pane-worker")
+        );
+        std::fs::write(&registry,
+            r#"{"schema_version":1,"agents":[{"id":"worker","display_name":"Renamed worker","role":"worker","pane_id":"pane-worker"}]}"#,
+        ).unwrap();
+        assert!(state.tick_organization_registry(std::time::Instant::now()));
+        assert_eq!(
+            state.config.organization.agents[0].pane_id.as_deref(),
+            Some("pane-worker")
+        );
+        assert_eq!(
+            state.config.organization.agents[0].display_name.as_deref(),
+            Some("Renamed worker")
+        );
+        std::fs::remove_file(registry).unwrap();
+        std::fs::remove_file(config_file).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
