@@ -43,6 +43,16 @@ impl crate::platform::PrefixInputSource for NoopPrefixInputSource {
     }
 }
 
+fn png_pixels(path: &Path) -> (u32, u32, usize, Vec<u8>) {
+    let mut reader = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).unwrap()))
+        .read_info()
+        .unwrap();
+    let mut bytes = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut bytes).unwrap();
+    bytes.truncate(info.buffer_size());
+    (info.width, info.height, info.color_type.samples(), bytes)
+}
+
 struct EvidenceSink {
     root: std::path::PathBuf,
     states: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -72,15 +82,53 @@ impl IntegratedPresentationSink for EvidenceSink {
             let path = self.root.join(format!("{index:02}-overlay-{phase}.png"));
             let mut native = IntegratedGraphicsSink::new(&path);
             native.present(IntegratedPresentationUpdate::Full(frame))?;
+            // Compare real raster pixels inside the compositor's occlusions with the same
+            // complete frame rendered without semantic cards. This is not a mock image.
+            let mut protected_pixels = 0usize;
+            if !frame.overlay_occlusions.is_empty() {
+                let reference_path = self.root.join(format!("{index:02}-overlay-reference.png"));
+                let reference = IntegratedPresentationFrame {
+                    identity: frame.identity.clone(),
+                    organization: Vec::new(),
+                    organization_hits: Vec::new(),
+                    overlay_occlusions: frame.overlay_occlusions.clone(),
+                    office_operations_allowed: false,
+                    frame: frame.frame.clone(),
+                };
+                IntegratedGraphicsSink::new(&reference_path)
+                    .present(IntegratedPresentationUpdate::Full(&reference))?;
+                let (width, height, channels, pixels) = png_pixels(&path);
+                let (rw, rh, rc, expected) = png_pixels(&reference_path);
+                assert_eq!((width, height, channels), (rw, rh, rc));
+                let cw = width / u32::from(frame.frame.width);
+                let ch = height / u32::from(frame.frame.height);
+                for r in &frame.overlay_occlusions {
+                    for y in u32::from(r.y) * ch..u32::from(r.bottom()) * ch {
+                        let start = (y * width + u32::from(r.x) * cw) as usize * channels;
+                        let end = (y * width + u32::from(r.right()) * cw) as usize * channels;
+                        assert_eq!(
+                            &pixels[start..end],
+                            &expected[start..end],
+                            "semantic cards must not paint over the composed overlay"
+                        );
+                        protected_pixels += (end - start) / channels;
+                    }
+                }
+                assert!(protected_pixels > 0);
+            }
+            let mut keys = std::collections::HashSet::new();
+            assert_eq!(frame.organization.len(), frame.organization_hits.len());
             let operations = frame.organization.iter().map(|operation| {
                 let node = match operation { IntegratedOfficeOperation::Group(n) | IntegratedOfficeOperation::Person(n) => n };
+                assert!(keys.insert(node.key.clone()), "duplicate organization key");
+                assert_eq!(frame.organization_hits.iter().filter(|hit| hit.key == node.key).count(), 1);
                 let hit = frame.organization_hits.iter().find(|hit| hit.key == node.key).expect("semantic hit");
                 assert_eq!(hit.rect, node.rect);
                 assert_eq!(hit.pane_id, node.pane_id);
                 assert!(node.rect.right() <= frame.frame.width && node.rect.bottom() <= frame.frame.height);
                 serde_json::json!({"key":node.key,"parent":node.parent_key,"pane":node.pane_id,"kind":format!("{:?}",node.kind),"name":node.name,"focusable":node.focusable,"rect":[node.rect.x,node.rect.y,node.rect.width,node.rect.height],"box_start":node.box_start,"box_end":node.box_end})
             }).collect::<Vec<_>>();
-            states.push(serde_json::json!({"phase":phase,"image":path.file_name().unwrap().to_string_lossy(),"allowed":frame.office_operations_allowed,"occlusions":frame.overlay_occlusions.iter().map(|r|[r.x,r.y,r.width,r.height]).collect::<Vec<_>>(),"operations":operations,"endpoint":frame.identity.endpoint_id,"generation":frame.identity.generation,"boot":frame.identity.boot_id,"projection":frame.identity.projection_revision,"surface":frame.identity.surface_revision}));
+            states.push(serde_json::json!({"protected_pixels":protected_pixels,"phase":phase,"image":path.file_name().unwrap().to_string_lossy(),"allowed":frame.office_operations_allowed,"occlusions":frame.overlay_occlusions.iter().map(|r|[r.x,r.y,r.width,r.height]).collect::<Vec<_>>(),"operations":operations,"endpoint":frame.identity.endpoint_id,"generation":frame.identity.generation,"boot":frame.identity.boot_id,"projection":frame.identity.projection_revision,"surface":frame.identity.surface_revision}));
         }
         Ok(())
     }
@@ -510,13 +558,54 @@ fn integrated_client_event_to_presentation() {
             _ => None,
         })
         .expect("right-focus effect through EndpointRegistry");
-    let next = surface(size.cols, size.rows, 8, "pane-2");
+    let request: crate::api::schema::Request = serde_json::from_str(&selection).unwrap();
+    assert!(commands.accepts_response(&endpoint::ClientEndpointId::Local, 1, BOOT, &request.id));
+    let crate::api::schema::Method::PaneFocusDirection(params) = &request.method else {
+        panic!("focus request");
+    };
+    let previous = surface(size.cols, size.rows, 7, "pane-1");
+    // Controlled endpoint derives its next projection from the captured request and the
+    // existing directional navigation function, rather than injecting a literal target.
+    let panes: Vec<crate::layout::PaneInfo> = previous
+        .panes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let rect = Rect::new(p.rect.x, p.rect.y, p.rect.width, p.rect.height);
+            crate::layout::PaneInfo {
+                id: crate::layout::PaneId::from_raw(i as u32 + 1),
+                rect,
+                inner_rect: rect,
+                scrollbar_rect: None,
+                borders: ratatui::widgets::Borders::NONE,
+                is_focused: Some(p.pane_id.as_str()) == params.pane_id.as_deref(),
+            }
+        })
+        .collect();
+    let source_index = previous
+        .panes
+        .iter()
+        .position(|p| Some(p.pane_id.as_str()) == params.pane_id.as_deref())
+        .unwrap();
+    let direction = match params.direction {
+        crate::api::schema::PaneDirection::Right => crate::layout::NavDirection::Right,
+        _ => panic!("fixture only expects the actual right-focus command"),
+    };
+    let target = crate::layout::find_in_direction(&panes[source_index], direction, &panes).unwrap();
+    let target_index = panes.iter().position(|p| p.id == target).unwrap();
+    let target_pane = &previous.panes[target_index].pane_id;
+    assert_eq!(target_pane, "pane-2");
+    let next = surface(size.cols, size.rows, 8, target_pane);
     assert!(next.panes[0].rect.x + next.panes[0].rect.width <= next.panes[1].rect.x);
+    let successor = snapshot(8, target_pane);
+    let controlled_projection = serde_json::to_value(&successor).unwrap();
+    let successor: ClientShellSnapshot =
+        serde_json::from_value(controlled_projection.clone()).unwrap();
     state.shell.as_mut().unwrap().set_pane_surface(next);
     install_client_shell_snapshot(
         &mut state,
         &endpoint::ClientEndpointId::Local,
-        Box::new(snapshot(8, "pane-2")),
+        Box::new(successor),
         false,
         &mut endpoints,
         &mut prefix,
@@ -551,8 +640,28 @@ fn integrated_client_event_to_presentation() {
     assert_eq!(worker["parent"], manager["key"]);
     assert_eq!(manager["focusable"], true);
     assert_eq!(worker["focusable"], true);
-    find("pane-3");
-    find("pane-4");
+    let argos = find("pane-3");
+    let reserve = find("pane-4");
+    assert_eq!(argos["kind"], "Coordinator");
+    assert_eq!(reserve["kind"], "Coordinator");
+    assert_eq!(manager["parent"], argos["key"]);
+    assert_eq!(
+        reserve["parent"], argos["parent"],
+        "reserved coordinator remains inside the common Argos group"
+    );
+    assert_eq!(manager["box_start"], true);
+    assert_eq!(worker["box_end"], true);
+    for (i, node) in ops.iter().enumerate() {
+        let rect = &node["rect"];
+        for other in ops.iter().skip(i + 1) {
+            let r = &other["rect"];
+            assert!(
+                rect[1].as_u64().unwrap() + rect[3].as_u64().unwrap() <= r[1].as_u64().unwrap()
+                    || r[1].as_u64().unwrap() + r[3].as_u64().unwrap() <= rect[1].as_u64().unwrap(),
+                "semantic rows may not overlap"
+            );
+        }
+    }
     for entry in states.iter() {
         assert_eq!(entry["boot"], BOOT);
         assert_eq!(entry["generation"], 1);
@@ -563,10 +672,53 @@ fn integrated_client_event_to_presentation() {
     let native: serde_json::Value =
         serde_json::from_slice(&std::fs::read(open_path.with_extension("json")).unwrap()).unwrap();
     assert!(native["organization_operations_occluded"].as_u64().unwrap() > 0);
+    let closed_path = root.join(first["image"].as_str().unwrap());
+    let closed_pixels = png_pixels(&closed_path);
+    let open_pixels = png_pixels(&open_path);
+    assert_eq!(
+        (closed_pixels.0, closed_pixels.1, closed_pixels.2),
+        (open_pixels.0, open_pixels.1, open_pixels.2)
+    );
+    assert_ne!(
+        closed_pixels.3, open_pixels.3,
+        "open and closed overlays must change the real raster"
+    );
+    assert!(open["protected_pixels"].as_u64().unwrap() > 0);
     let last = states.last().unwrap();
     assert_eq!(last["projection"], 8);
     assert_eq!(last["surface"], 10);
-    let receipt = serde_json::json!({"test":"integrated_client_event_to_presentation","source":"common Windows dispatcher + finalizer + controlled EndpointRegistry + common compose + native sink","fixture":true,"production_input":false,"selection_request":serde_json::from_str::<serde_json::Value>(&selection).unwrap(),"endpoint_successor_simulated":true,"messages":serde_json::to_value(&*messages).unwrap(),"paste":PASTE,"prefix_switches":prefix.switched,"prefix_restores":prefix.restored,"ansi_frame_equal":true,"ansi_no_semantic_package":true,"frames":&*states});
+    struct FailingSink;
+    impl IntegratedPresentationSink for FailingSink {
+        fn present(
+            &mut self,
+            update: IntegratedPresentationUpdate<'_>,
+        ) -> Result<(), IntegratedPresentationError> {
+            if matches!(update, IntegratedPresentationUpdate::Full(_)) {
+                Err(IntegratedPresentationError::new(
+                    "isolated presentation failure",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    drop(messages);
+    state.set_integrated_presentation_sink(Some(Box::new(FailingSink)));
+    let failure = dispatch(
+        &mut state,
+        &[key(ClientKeyCode::Char('b'), ctrl)],
+        &mut endpoints,
+        &mut pending,
+        &mut commands,
+        &mut prefix,
+        &event_tx,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(failure, ClientError::Presentation(ref text) if text == "isolated presentation failure")
+    );
+    let messages = sent.lock().unwrap();
+    let receipt = serde_json::json!({"presentation_error_propagated":true,"test":"integrated_client_event_to_presentation","source":"common Windows dispatcher + finalizer + controlled EndpointRegistry + common compose + native sink","fixture":true,"production_input":false,"selection_request":serde_json::from_str::<serde_json::Value>(&selection).unwrap(),"endpoint_successor_simulated":true,"successor_derivation":"captured request + common layout::find_in_direction + existing snapshot installer; no server/PTY execution","controlled_projection":controlled_projection,"messages":serde_json::to_value(&*messages).unwrap(),"paste":PASTE,"prefix_switches":prefix.switched,"prefix_restores":prefix.restored,"ansi_frame_equal":true,"ansi_no_semantic_package":true,"frames":&*states});
     std::fs::write(
         root.join("receipt.json"),
         serde_json::to_vec_pretty(&receipt).unwrap(),

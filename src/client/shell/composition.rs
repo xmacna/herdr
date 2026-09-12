@@ -650,7 +650,8 @@ impl ClientShellState {
                             .endpoints
                             .iter()
                             .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-                            .map_or(0, |endpoint| endpoint.generation),
+                            .and_then(|endpoint| endpoint.snapshot_generation)
+                            .unwrap_or_default(),
                         boot_id: snapshot.boot_id.clone(),
                         projection_revision: snapshot.revision,
                         surface_revision: surface.surface_revision,

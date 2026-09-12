@@ -327,6 +327,9 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
             std::io::ErrorKind::ConnectionAborted,
             reason.unwrap_or_else(|| "server shut down during handshake".into()),
         ),
+        ClientError::Presentation(message) => {
+            std::io::Error::new(std::io::ErrorKind::Other, message)
+        }
     }
 }
 

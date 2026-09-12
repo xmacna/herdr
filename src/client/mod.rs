@@ -51,9 +51,9 @@ use events::ClientLoopEvent;
 pub(crate) use integrated_graphics::IntegratedGraphicsSink;
 pub(crate) use integrated_presentation::{
     IntegratedOfficeNode, IntegratedOfficeNodeKind, IntegratedOfficeOperation,
-    IntegratedOfficeStatus, IntegratedOrganizationHit, IntegratedPresentationCollector,
-    IntegratedPresentationError, IntegratedPresentationFrame, IntegratedPresentationIdentity,
-    IntegratedPresentationPayload, IntegratedPresentationSink, IntegratedPresentationUpdate,
+    IntegratedOrganizationHit, IntegratedPresentationCollector, IntegratedPresentationError,
+    IntegratedPresentationFrame, IntegratedPresentationIdentity, IntegratedPresentationPayload,
+    IntegratedPresentationSink, IntegratedPresentationUpdate,
 };
 use loop_config::ClientLoopConfig;
 use shell_runtime::*;

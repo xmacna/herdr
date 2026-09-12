@@ -305,7 +305,7 @@ mod native {
         let height = (u32::from(frame.frame.height).max(1) * 22).max(180);
         let started = Instant::now();
         unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED).map_err(fail)?;
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().map_err(fail)?;
         }
         let _apartment = ComApartment;
         let d2d: ID2D1Factory =
