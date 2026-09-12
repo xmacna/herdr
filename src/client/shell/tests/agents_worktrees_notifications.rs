@@ -1322,6 +1322,26 @@ fn organization_renderer_captures_wide_and_narrow_native_shells() {
     // complete organization tree while retaining the upstream default width.
     state.sidebar_section_split = 0.18;
 
+    // Pre-change fixture at the approved client's observed outer geometry.
+    // Synthetic config retains its own width limits: not a live-config replay.
+    state.sidebar_width = 50;
+    let baseline_frame = state.compose(209, 51).expect("approved geometry shell");
+    if let Some(capture_dir) = std::env::var_os("HERDR_ORG_CAPTURE_DIR") {
+        let capture_dir = std::path::PathBuf::from(capture_dir);
+        std::fs::create_dir_all(&capture_dir).expect("capture directory");
+        std::fs::write(
+            capture_dir.join("matched-209x51.txt"),
+            organization_demo_frame_text(&baseline_frame),
+        )
+        .expect("matched text");
+        std::fs::write(
+            capture_dir.join("matched-209x51.json"),
+            serde_json::to_vec(&baseline_frame).expect("matched frame json"),
+        )
+        .expect("matched frame");
+    }
+    state.sidebar_width = 42;
+
     let wide_frame = state.compose(106, 60).expect("wide shell");
     let wide_json = serde_json::to_vec(&wide_frame).expect("wide frame json");
     let wide = organization_demo_frame_text(&wide_frame);
