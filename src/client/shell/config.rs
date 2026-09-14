@@ -530,4 +530,92 @@ mod tests {
             (KeyCode::Char('x'), KeyModifiers::CONTROL)
         );
     }
+
+    #[test]
+    fn watched_organization_reload_updates_tree_and_rejects_invalid_toml() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "herdr-watched-organization-reload-{}.toml",
+            std::process::id()
+        ));
+        let previous_path = std::env::var_os(crate::config::CONFIG_PATH_ENV_VAR);
+        let initial = r#"
+[ui.organization]
+enabled = true
+root = "Argos"
+orphan_label = "Sem cadastro"
+
+[[ui.organization.agents]]
+id = "worker-registration"
+name = "wk-live"
+label = "Worker A"
+pane_id = "stale-pane"
+role = "worker"
+"#;
+        std::fs::write(&path, initial).expect("write initial organization config");
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let loaded = Config::load();
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&loaded.config));
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents.push(crate::protocol::ClientShellAgent {
+            pane_id: "live-pane".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("wk-live".into()),
+            display_agent: None,
+            agent: Some("codex".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Working,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: true,
+        });
+        state.set_snapshot(Box::new(snapshot));
+        state.agent_scroll = 7;
+        state.organization_collapsed.insert("kept-collapse".into());
+        let now = std::time::Instant::now();
+        let mut watcher = crate::client::config_reload::ClientConfigWatcher::new(path.clone(), now);
+
+        let updated = initial.replace("Worker A", "Worker B after reload");
+        std::fs::write(&path, updated).expect("update organization config");
+        assert!(watcher.changed(now + crate::client::config_reload::CONFIG_POLL_INTERVAL));
+        state.reload_client_config();
+        let rows = crate::client::shell::organization::rows(
+            state.snapshot.as_deref().expect("active snapshot"),
+            &state.config.organization,
+            "local",
+            &state.organization_collapsed,
+            None,
+        );
+        assert!(rows.iter().any(|row| {
+            row.label == "Worker B after reload" && row.pane_id.as_deref() == Some("live-pane")
+        }));
+        assert_eq!(state.agent_scroll, 7);
+        assert!(state.organization_collapsed.contains("kept-collapse"));
+
+        std::fs::write(&path, "[ui.organization\nenabled = true\n")
+            .expect("write invalid organization config");
+        assert!(watcher.changed(now + crate::client::config_reload::CONFIG_POLL_INTERVAL * 2));
+        state.reload_client_config();
+        assert_eq!(
+            state.config.organization.agents[0].label,
+            "Worker B after reload"
+        );
+        assert!(state
+            .local_config_diagnostic
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.contains("invalid; keeping current config")));
+        assert_eq!(state.agent_scroll, 7);
+        assert!(state.organization_collapsed.contains("kept-collapse"));
+
+        match previous_path {
+            Some(previous) => std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, previous),
+            None => std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR),
+        }
+        std::fs::remove_file(path).expect("remove organization config");
+    }
 }

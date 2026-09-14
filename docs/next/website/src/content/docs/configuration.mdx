@@ -314,6 +314,7 @@ pending_label = "Pending"
 
 [[ui.organization.agents]]
 id = "coordinator"
+name = "ger-coordinator"
 label = "Coordinator"
 pane_id = "machine-a:p1"
 endpoint_id = "ssh:machine-a"
@@ -322,6 +323,7 @@ model = "example-model"
 
 [[ui.organization.agents]]
 id = "manager"
+name = "ger-manager"
 label = "Manager"
 parent_id = "coordinator"
 pane_id = "machine-a:p2"
@@ -331,6 +333,7 @@ task = "Coordinate delivery"
 
 [[ui.organization.agents]]
 id = "worker"
+name = "wk-worker"
 label = "Worker"
 parent_id = "manager"
 pane_id = "machine-a:p3"
@@ -339,7 +342,9 @@ role = "worker"
 task = "Implement a change"
 ```
 
-Each registration needs a stable, user-chosen `id`; the display `label` is not an identity. `parent_id` builds the hierarchy. Optional metadata fields are `role`, `owner_id`, `area`, `task`, and `model`. A runtime is bound only when both `endpoint_id` and `pane_id` match the selected endpoint and pane. If a pane is recreated, update `pane_id` manually; setting only `HERDR_CONFIG_PATH` does not create an isolated runtime or socket.
+Each registration needs a stable, user-chosen `id`; the display `label` is not an identity. `parent_id` builds the hierarchy. Set `name` to the stable Herdr agent name: it is matched before the older `pane_id` fallback, so a restarted pane can keep its registration. Optional metadata fields are `role`, `owner_id`, `area`, `task`, and `model`. `endpoint_id` still scopes a registration to the selected endpoint.
+
+The foreground client checks its `HERDR_CONFIG_PATH` file every two seconds. A valid change updates the organization tree in place without resetting pane focus, sidebar scroll, or collapsed groups. Invalid TOML keeps the last valid client configuration and shows the normal config diagnostic instead of closing the client. Changing `HERDR_CONFIG_PATH` does not create an isolated runtime or socket.
 
 An entry with `reserved = true` can represent planned capacity without a runtime. Runtime agents without a matching registration appear under the orphan group and remain focusable. Invalid or duplicate registrations appear under Pending so they remain visible for repair. A reservation without a runtime does not imply an attention state.
 

@@ -53,6 +53,10 @@ impl OrganizationConfig {
 pub struct OrganizationAgentConfig {
     /// Stable local registration key. It is never inferred from display text.
     pub id: String,
+    /// Stable live Herdr agent name. When present, it is the primary runtime identity.
+    /// `pane_id` remains a fallback for older generated configs and offline entries.
+    #[serde(alias = "agent_name")]
+    pub name: Option<String>,
     pub label: String,
     /// Existing client-visible runtime target. Pane ids survive shell reconnects.
     #[serde(alias = "runtime_id")]
@@ -83,6 +87,7 @@ mod tests {
 
                 [[ui.organization.agents]]
                 id = "luna"
+                name = "wk-release-luna"
                 label = "Luna"
                 pane_id = "machine-a:p1"
                 endpoint_id = "ssh:machine-a"
@@ -98,6 +103,7 @@ mod tests {
         assert!(config.ui.organization.enabled);
         assert_eq!(config.ui.organization.root_label(), "Operations");
         assert_eq!(registration.id, "luna");
+        assert_eq!(registration.name.as_deref(), Some("wk-release-luna"));
         assert_eq!(registration.pane_id.as_deref(), Some("machine-a:p1"));
         assert_eq!(registration.endpoint_id.as_deref(), Some("ssh:machine-a"));
         assert_eq!(registration.model.as_deref(), Some("gpt-5.6-luna"));

@@ -1,5 +1,55 @@
 use super::*;
 
+pub(super) const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigFileStamp {
+    Present {
+        modified: Option<std::time::SystemTime>,
+        len: u64,
+    },
+    Unavailable(std::io::ErrorKind),
+}
+
+fn config_file_stamp(path: &std::path::Path) -> ConfigFileStamp {
+    match std::fs::metadata(path) {
+        Ok(metadata) => ConfigFileStamp::Present {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        },
+        Err(error) => ConfigFileStamp::Unavailable(error.kind()),
+    }
+}
+
+pub(super) struct ClientConfigWatcher {
+    path: std::path::PathBuf,
+    stamp: ConfigFileStamp,
+    next_poll: std::time::Instant,
+}
+
+impl ClientConfigWatcher {
+    pub(super) fn new(path: std::path::PathBuf, now: std::time::Instant) -> Self {
+        Self {
+            stamp: config_file_stamp(&path),
+            path,
+            next_poll: now.checked_add(CONFIG_POLL_INTERVAL).unwrap_or(now),
+        }
+    }
+
+    pub(super) fn changed(&mut self, now: std::time::Instant) -> bool {
+        if now < self.next_poll {
+            return false;
+        }
+        self.next_poll = now.checked_add(CONFIG_POLL_INTERVAL).unwrap_or(now);
+        let stamp = config_file_stamp(&self.path);
+        if stamp == self.stamp {
+            return false;
+        }
+        self.stamp = stamp;
+        true
+    }
+}
+
 pub(super) fn init_logging() {
     crate::logging::init_file_logging("herdr-client.log");
 }
@@ -125,5 +175,31 @@ pub(super) fn reload_local_client_config(
         Err(diagnostics) => {
             warn!(diagnostics = ?diagnostics, "failed to reload local client config; keeping current client config");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_watcher_reports_file_changes_only_after_the_poll_interval() {
+        let path = std::env::temp_dir().join(format!(
+            "herdr-client-config-watch-{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let now = std::time::Instant::now();
+        let mut watcher = ClientConfigWatcher::new(path.clone(), now);
+
+        std::fs::write(&path, "[ui]\nsidebar_width = 31\n").expect("write watched config");
+        assert!(!watcher.changed(now + Duration::from_secs(1)));
+        assert!(watcher.changed(now + CONFIG_POLL_INTERVAL));
+        assert!(!watcher.changed(now + CONFIG_POLL_INTERVAL + Duration::from_millis(1)));
+
+        std::fs::write(&path, "[ui]\nsidebar_width = 44\n# changed length\n")
+            .expect("update watched config");
+        assert!(watcher.changed(now + CONFIG_POLL_INTERVAL * 2));
+        std::fs::remove_file(path).expect("remove watched config");
     }
 }

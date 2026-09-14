@@ -141,6 +141,12 @@ fn run_client_with_mode(
 ) -> io::Result<()> {
     init_logging();
 
+    let config_watcher = attach_request.is_none().then(|| {
+        config_reload::ClientConfigWatcher::new(
+            crate::config::config_path(),
+            std::time::Instant::now(),
+        )
+    });
     let loaded_config = crate::config::Config::load();
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
@@ -182,6 +188,7 @@ fn run_client_with_mode(
         endpoint_keybindings,
         remote_image_paste_key,
         shell_config,
+        config_watcher,
     };
 
     crate::logging::startup("client");
@@ -407,6 +414,7 @@ async fn run_client_loop(
         detached_process_children: Vec::new(),
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
+    let mut config_watcher = config.config_watcher;
     let mut federated = endpoint_catalog.has_enabled_ssh();
     if let Some(shell) = state.shell.as_mut() {
         shell.set_graphics_cell_size(initial_cell_width_px, initial_cell_height_px);
@@ -1932,6 +1940,19 @@ async fn run_client_loop(
             }
             ClientLoopEvent::Timer => {
                 client_timer.fired();
+                if config_watcher
+                    .as_mut()
+                    .is_some_and(|watcher| watcher.changed(now))
+                {
+                    apply_reload(
+                        &mut state,
+                        &mut write_stream,
+                        &mut pending_activation,
+                        &host_mouse_capture_active,
+                        &host_sgr_pixels_active,
+                        &mut prefix_input_source,
+                    )?;
+                }
                 #[cfg(unix)]
                 if let Ok(mut matcher) = state.direct_graphics_response.lock() {
                     matcher.expire();

@@ -295,6 +295,20 @@ fn applicable(entry: &OrganizationAgentConfig, endpoint_scope: &str) -> bool {
         })
 }
 
+fn stable_runtime_name(entry: &OrganizationAgentConfig) -> Option<&str> {
+    entry
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        // Existing generated configs used the registration id as the stable name
+        // whenever both identities happened to be equal. Preserve that useful case.
+        .or_else(|| {
+            let id = entry.id.trim();
+            (!id.is_empty()).then_some(id)
+        })
+}
+
 pub(super) fn rows(
     snapshot: &ClientShellSnapshot,
     config: &OrganizationConfig,
@@ -388,22 +402,35 @@ pub(super) fn rows(
         }
     }
     let mut runtime_by_pane = HashMap::<&str, &ClientShellAgent>::new();
+    let mut runtime_by_name = HashMap::<&str, &ClientShellAgent>::new();
     for agent in &snapshot.agents {
         runtime_by_pane.entry(&agent.pane_id).or_insert(agent);
+        if let Some(name) = agent
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            runtime_by_name.entry(name).or_insert(agent);
+        }
     }
     let runtime = entries
         .iter()
         .map(|entry| {
-            entry
-                .pane_id
-                .as_deref()
-                .and_then(|id| runtime_by_pane.get(id).copied())
+            stable_runtime_name(entry)
+                .and_then(|name| runtime_by_name.get(name).copied())
+                .or_else(|| {
+                    entry
+                        .pane_id
+                        .as_deref()
+                        .and_then(|id| runtime_by_pane.get(id).copied())
+                })
         })
         .collect::<Vec<_>>();
     let aggregate = aggregate_states(&children, &runtime);
-    let registered_panes = entries
+    let registered_panes = runtime
         .iter()
-        .filter_map(|entry| entry.pane_id.as_deref())
+        .filter_map(|agent| agent.map(|agent| agent.pane_id.as_str()))
         .collect::<HashSet<_>>();
     let mut configured_roots = Vec::new();
     let mut reserved_indices = Vec::new();
@@ -1040,6 +1067,58 @@ mod tests {
         assert!(rows(&snapshot, &config, "ssh:one", &HashSet::new(), None)
             .iter()
             .any(|row| row.pane_id.as_deref() == Some("w1:p1")));
+    }
+
+    #[test]
+    fn stable_name_wins_over_a_stale_pane_binding() {
+        let mut snapshot = test_snapshot(&[
+            ("current-pane", AgentStatus::Working),
+            ("stale-pane", AgentStatus::Idle),
+        ]);
+        snapshot.agents[0].name = Some("wk-stable".into());
+        snapshot.agents[1].name = Some("different-agent".into());
+        let rows = rows(
+            &snapshot,
+            &config(vec![OrganizationAgentConfig {
+                id: "worker-registration".into(),
+                name: Some("wk-stable".into()),
+                label: "Registered worker".into(),
+                pane_id: Some("stale-pane".into()),
+                ..Default::default()
+            }]),
+            "local",
+            &HashSet::new(),
+            None,
+        );
+
+        assert!(rows.iter().any(|row| {
+            row.label == "Registered worker" && row.pane_id.as_deref() == Some("current-pane")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.meta.contains("unregistered") && row.pane_id.as_deref() == Some("stale-pane")
+        }));
+        assert!(!rows.iter().any(|row| {
+            row.meta.contains("unregistered") && row.pane_id.as_deref() == Some("current-pane")
+        }));
+    }
+
+    #[test]
+    fn live_agent_without_registration_is_visible_in_sem_cadastro() {
+        let mut organization = config(Vec::new());
+        organization.orphan_label = "Sem cadastro".into();
+        let rows = rows(
+            &test_snapshot(&[("rogue-pane", AgentStatus::Blocked)]),
+            &organization,
+            "local",
+            &HashSet::new(),
+            None,
+        );
+        let bucket = rows
+            .iter()
+            .position(|row| row.label == "Sem cadastro")
+            .expect("Sem cadastro bucket");
+        assert_eq!(rows[bucket + 1].pane_id.as_deref(), Some("rogue-pane"));
+        assert!(rows[bucket + 1].meta.contains("unregistered"));
     }
 
     #[test]
